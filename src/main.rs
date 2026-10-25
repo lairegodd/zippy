@@ -142,12 +142,15 @@ fn age(id: u64) -> String {
     }
 }
 
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+}
+
 fn owo_dm_unread(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix("owo")?.trim_start().strip_prefix(',')?.trim_start();
+    let rest = strip_prefix_ignore_case(name, "owo")?.trim_start().strip_prefix(',')?.trim_start();
     let (count, label) = rest.split_once(' ')?;
-    if !label.starts_with("unread message") {
-        return None;
-    }
+    strip_prefix_ignore_case(label, "unread message")?;
     count.parse().ok()
 }
 
@@ -457,15 +460,13 @@ impl Uia {
                     summary_of = Some(id);
                     continue;
                 }
-                let lower = name.to_lowercase();
+                if let Some(n) = owo_dm_unread(&name) {
+                    scan.owo_dm_unread += n;
+                }
                 if !name.is_empty()
                     && let Some(id) = summary_of.take()
                 {
-                    scan.messages.push(ChatMessage { id, summary: name });
-                }
-                let name = lower;
-                if let Some(n) = owo_dm_unread(&name) {
-                    scan.owo_dm_unread += n;
+                    scan.messages.push(ChatMessage { id, summary: name.clone() });
                 }
                 if el.CachedControlType().ok() != Some(UIA_EditControlTypeId) {
                     continue;
@@ -515,11 +516,17 @@ fn find_discord_window(uia: &Uia) -> Option<(Target, &'static str)> {
         if uia.scan(hwnd).is_ok_and(|s| s.url_is_discord) {
             return Some((Target { hwnd, title, exe }, "URL discord.com"));
         }
-        if by_title.is_none() && title.to_lowercase().contains("discord") {
+        if by_title.is_none() && is_discord_title(&title) {
             by_title = Some(Target { hwnd, title, exe });
         }
     }
-    by_title.map(|t| (t, "a \"discord\" window title"))
+    by_title.map(|t| (t, "its Discord tab title"))
+}
+
+/// Discord web titles start with "Discord" (after unread badges); other pages only mention it.
+fn is_discord_title(title: &str) -> bool {
+    strip_prefix_ignore_case(channel_key(title), "discord")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(" |") || rest.starts_with(" -"))
 }
 
 fn wait_for_page(uia: &Uia, hwnd: HWND) -> Result<PageScan> {
@@ -578,12 +585,12 @@ struct Zippy {
 impl Zippy {
     fn pause(&mut self, reason: &str, alarm: bool) {
         self.state = State::Paused;
-        println!("\n[{}] [PAUSED] {reason}", clock());
+        println!("\n[{}] Macro has Stopped Temporarily! {reason}", clock());
         println!("       Solve the captcha or go back to the original channel, then press F8 to resume.");
         if alarm {
             alert(
                 self.target.hwnd,
-                "Zippy STOPPED",
+                "Zippy stopped!",
                 &format!("{reason}\nSolve the verification, then press F8 in the Zippy window."),
             );
         }
@@ -591,9 +598,9 @@ impl Zippy {
 
     fn ban(&mut self, id: u64) {
         self.state = State::Banned;
-        println!("\n[{}] [BAN] OwO ban message detected ({}). Zippy stopped.", clock(), age(id));
+        println!("\n[{}] OwO ban message detected ({}). Zippy stopped.", clock(), age(id));
         println!("       Check who sent it. If it is not from OwO (fake) or the ban is over,");
-        println!("       press F8 to resume. F10 quits.");
+        println!("       press F8 to resume. F10 to quit.");
         alert(
             self.target.hwnd,
             "OwO: BAN message detected",
@@ -638,7 +645,7 @@ impl Zippy {
         self.next_command = 0;
         self.next_at = Instant::now();
         self.next_scan = Instant::now() + SCAN_EVERY;
-        println!("[{}] [RESUMED] Zippy running again.", clock());
+        println!("[{}] Zippy running again.", clock());
     }
 
     fn check(&mut self) -> Option<PageScan> {
@@ -914,11 +921,11 @@ fn main() -> Result<()> {
         m.pause("Discord chat messages are not readable (browser accessibility off?).", false);
     } else if initial.owo_dm_unread > 0 {
         m.pause(
-            &format!("{} unread OwO DMs; check them for a captcha first.", initial.owo_dm_unread),
+            &format!("{} unread OwO DMs, check them for a captcha first, if there isn't any, ignore this message.", initial.owo_dm_unread),
             false,
         );
     } else {
-        println!("[START] {} page elements read. Zippy running.", initial.elements);
+        println!("{} page elements read. Starting...", initial.elements);
     }
 
     loop {
@@ -979,11 +986,23 @@ mod tests {
     fn owo_dm_unread_reads_only_the_owo_dm_bubble() {
         assert_eq!(owo_dm_unread("owo , 10 unread messages"), Some(10));
         assert_eq!(owo_dm_unread("owo , 1 unread message"), Some(1));
+        assert_eq!(owo_dm_unread("OwO , 2 Unread Messages"), Some(2));
+        assert_eq!(owo_dm_unread("ow"), None);
         assert_eq!(owo_dm_unread("owo"), None);
         assert_eq!(owo_dm_unread("owo verified app , 🌱 | player, hunt is empowered by"), None);
         assert_eq!(owo_dm_unread("owobot , 3 unread messages"), None);
         assert_eq!(owo_dm_unread("carl-bot , 2 unread messages"), None);
         assert_eq!(owo_dm_unread("1 mention, owo"), None);
+    }
+
+    #[test]
+    fn discord_title_matches_discord_tabs_not_pages_mentioning_it() {
+        assert!(is_discord_title("(3) • Discord | #owo | Server - Brave"));
+        assert!(is_discord_title("Discord | @someone - Google Chrome"));
+        assert!(is_discord_title("Discord - Brave"));
+        assert!(!is_discord_title("user/repo: Automated bot for farming Owo bot on Discord. - Brave"));
+        assert!(!is_discord_title("Discord bots guide - Google Search - Brave"));
+        assert!(!is_discord_title("Discordia - Wikipedia - Brave"));
     }
 
     #[test]
