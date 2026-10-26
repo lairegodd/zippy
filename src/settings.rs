@@ -17,6 +17,9 @@ mode = both
 gem1 = 57
 gem3 = 71
 gem4 = 78
+
+# Check GitHub for a newer Zippy at startup: on or off.
+update_check = on
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,11 +47,12 @@ impl Mode {
 pub struct Settings {
     pub mode: Mode,
     pub gems: [u16; 3],
+    pub update_check: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { mode: Mode::Both, gems: GEM_TYPES.map(|(_, ids)| *ids.end()) }
+        Self { mode: Mode::Both, gems: GEM_TYPES.map(|(_, ids)| *ids.end()), update_check: true }
     }
 }
 
@@ -84,6 +88,14 @@ impl Settings {
                 };
                 continue;
             }
+            if key == "update_check" {
+                settings.update_check = match value.to_lowercase().as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(format!("line {number}: update_check must be on or off, not `{value}`")),
+                };
+                continue;
+            }
             let Some(slot) = GEM_TYPES.iter().position(|(kind, _)| key == format!("gem{kind}")) else {
                 return Err(format!("line {number}: unknown setting `{key}`"));
             };
@@ -100,7 +112,8 @@ impl Settings {
     pub fn describe(&self) -> String {
         let gems: Vec<String> =
             GEM_TYPES.iter().zip(self.gems).map(|((kind, _), id)| format!("gem{kind}={id}")).collect();
-        format!("mode={:?}, {}", self.mode, gems.join(", ")).to_lowercase()
+        let update_check = if self.update_check { "on" } else { "off" };
+        format!("mode={:?}, {}, update_check={update_check}", self.mode, gems.join(", ")).to_lowercase()
     }
 }
 
@@ -117,8 +130,10 @@ mod tests {
     #[test]
     fn reads_mode_and_gem_choices() {
         let settings = Settings::parse("MODE = Hunt\ngem1=54\n  gem4 = 72  \n# gem3 = 65\n").unwrap();
-        assert_eq!(settings, Settings { mode: Mode::Hunt, gems: [54, 71, 72] });
+        assert_eq!(settings, Settings { mode: Mode::Hunt, gems: [54, 71, 72], update_check: true });
         assert_eq!(Settings::parse("mode = battle").unwrap().mode, Mode::Battle);
+        assert!(!Settings::parse("update_check = OFF").unwrap().update_check);
+        assert!(Settings::parse("update_check = maybe").unwrap_err().contains("on or off"));
     }
 
     #[test]

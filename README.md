@@ -44,6 +44,13 @@ The keys work from any window.
 | --- | --- |
 | `--check` | Finds the Discord tab, prints what Zippy can read (message box, newest message, captcha, ban, unread OwO DMs), and exits without sending anything. |
 | `--test-notification` | Sends a test alert so you can confirm Windows notifications are not blocked. |
+| `--update` | Installs the newest release without asking, then exits. |
+
+### Updates
+
+At startup Zippy asks GitHub whether a newer release exists. If one does, it asks before downloading. Press Enter (or type `y`) to install it: Zippy downloads the new `zippy.exe`, checks its SHA-256 checksum against the one GitHub lists for the release, replaces itself, and restarts. Your `settings.ini` stays as it is.
+
+If the download fails or the checksum does not match, nothing is replaced. Zippy needs write access to its own folder to update, so keep it somewhere like `Documents` rather than `Program Files`. To turn the check off, set `update_check = off`.
 
 ### When the chat cannot be read
 
@@ -65,6 +72,9 @@ mode = both
 gem1 = 57
 gem3 = 71
 gem4 = 78
+
+# Check GitHub for a newer Zippy at startup: on or off.
+update_check = on
 ```
 
 | Key | Allowed values | Default |
@@ -73,6 +83,7 @@ gem4 = 78
 | `gem1` | 51 to 57 | 57 |
 | `gem3` | 65 to 71 | 71 |
 | `gem4` | 72 to 78 | 78 |
+| `update_check` | `on`, `off` | `on` |
 
 If you run out of the gem you picked, Zippy uses the next lower ID you own (for example 54, then 53, 52, 51). It never uses a higher ID than the one you set. Gems are only managed in `hunt` and `both` mode.
 
@@ -87,12 +98,17 @@ cargo test
 
 The exe is written to `target\release\zippy.exe`. Use `build-release.ps1` for anything you share: a plain `cargo build --release` embeds your home folder path (and Windows user name) in the exe.
 
+### Publishing a release
+
+The updater looks for the latest GitHub release whose tag is `vX.Y.Z` and newer than the running build, and downloads the asset named `zippy.exe`. So for each release, bump `version` in `Cargo.toml`, build with `build-release.ps1`, tag the release with the same version (for example `v1.1.0`), and attach the exe as `zippy.exe`.
+
 ## What Zippy leaves on your PC
 
 - `settings.ini` next to the exe.
 - The registry key `HKEY_CURRENT_USER\Software\Classes\AppUserModelId\Zippy`, which Windows needs to show Zippy's notifications. Delete it if you stop using Zippy.
+- Right after an update, `zippy.old.exe` may sit next to `zippy.exe` until the next start removes it.
 
-Zippy sends nothing anywhere except the commands it types into Discord.
+Besides the commands it types into Discord, Zippy only contacts GitHub (`api.github.com` and the release download) to check for and download updates. Turn that off with `update_check = off`.
 
 ## Credits
 

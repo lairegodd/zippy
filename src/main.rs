@@ -1,7 +1,9 @@
 mod gems;
 mod settings;
+mod update;
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -821,7 +823,55 @@ fn describe(id: Option<u64>) -> String {
     id.map_or_else(|| "none".to_owned(), |id| format!("{id} ({})", age(id)))
 }
 
+fn ask(prompt: &str) -> bool {
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    // A closed stdin (read of 0 bytes) is not a yes.
+    matches!(std::io::stdin().read_line(&mut line), Ok(n) if n > 0)
+        && matches!(line.trim().to_lowercase().as_str(), "" | "y" | "yes")
+}
+
+/// Returns the path of the new exe once it is installed.
+fn update(confirmed: bool) -> Option<std::path::PathBuf> {
+    let release = match update::check() {
+        Ok(Some(release)) => release,
+        Ok(None) => {
+            if confirmed {
+                println!("[OK] Zippy {} is the latest version.", update::current_version());
+            }
+            return None;
+        }
+        Err(e) => {
+            println!("[!] Could not check for updates: {e}");
+            return None;
+        }
+    };
+    println!("[UPDATE] Zippy {} is available (you have {}).", release.tag, update::current_version());
+    if !confirmed && !ask("         Download and install it now? [Y/n] ") {
+        println!("         Skipped. Run zippy.exe --update to install it later.\n");
+        return None;
+    }
+    match update::install(&release) {
+        Ok(exe) => {
+            println!("[OK] Updated to {}.", release.tag);
+            Some(exe)
+        }
+        Err(e) => {
+            println!("[!] Update failed: {e}");
+            None
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    update::remove_previous();
+    if std::env::args().any(|a| a == "--update") {
+        if update(true).is_some() {
+            println!("     Start zippy.exe again to use it.");
+        }
+        return Ok(());
+    }
     let check_only = std::env::args().any(|a| a == "--check");
     let test_notification = std::env::args().any(|a| a == "--test-notification");
     let settings_path = std::env::current_exe()
@@ -847,6 +897,15 @@ fn main() -> Result<()> {
         CYCLE.as_secs()
     );
     println!("Settings: {} ({})\n", settings.describe(), settings_path.display());
+    if settings.update_check
+        && let Some(exe) = update(false)
+    {
+        println!("     Restarting...\n");
+        if let Err(e) = std::process::Command::new(&exe).args(std::env::args().skip(1)).spawn() {
+            println!("[!] Could not restart: {e}. Start zippy.exe again.");
+        }
+        return Ok(());
+    }
     let uia = Uia::new()?;
     if let Err(e) = register_toast_app() {
         println!("[!] Could not register Windows notifications: {e}");
