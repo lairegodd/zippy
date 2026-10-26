@@ -1,3 +1,4 @@
+mod daily;
 mod gems;
 mod settings;
 mod update;
@@ -8,11 +9,12 @@ use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use daily::Dailies;
 use gems::{ChatMessage, GemKeeper};
 use settings::Settings;
 use windows::core::{w, Result, BSTR, HSTRING, PWSTR, VARIANT};
 use windows::Data::Xml::Dom::XmlDocument;
-use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
@@ -24,7 +26,7 @@ use windows::Win32::System::Diagnostics::Debug::Beep;
 use windows::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
-    AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+    AttachThreadInput, CreateMutexW, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, ReleaseMutex,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Accessibility::{
@@ -35,7 +37,8 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_F10, VK_F8, VK_RETURN,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_F10, VK_F8, VK_LWIN, VK_MENU, VK_RETURN,
+    VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, FlashWindowEx, GetForegroundWindow, GetWindowTextLengthW,
@@ -46,12 +49,14 @@ use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
 /// OwO's 15 s cooldown plus 3 s for network lag.
 const CYCLE: Duration = Duration::from_secs(18);
+const OWO_EVERY: Duration = Duration::from_secs(11);
+const PRAY_EVERY: Duration = Duration::from_secs(5 * 60 + 3);
+const PRAY_COMMAND: &str = "owopray";
 const GAP_BETWEEN_COMMANDS: Duration = Duration::from_millis(2500);
 const SCAN_EVERY: Duration = Duration::from_secs(4);
 const SCAN_ATTEMPTS: u32 = 5;
 const SCAN_RETRY_DELAY: Duration = Duration::from_millis(300);
 const KEY_DELAY: Duration = Duration::from_millis(35);
-const CLOCK_SKEW: Duration = Duration::from_secs(10);
 const STARTUP_LOOKBACK: Duration = Duration::from_secs(30 * 60);
 const CAPTCHA_MARKERS: &[&str] = &["captcha", "verifythatyouarehuman", "areyouarealhuman"];
 const BAN_MARKERS: &[&str] = &["youhavebeenbanned", "macrosorbotting"];
@@ -71,6 +76,7 @@ const BROWSERS: &[&str] = &[
     "floorp.exe",
     "zen.exe",
 ];
+const DESKTOP_CLIENTS: &[&str] = &["discord.exe", "discordptb.exe", "discordcanary.exe", "discorddevelopment.exe"];
 
 /// OwO hides zero-width spaces and lookalike letters inside words; strip them before matching.
 fn squash(text: &str) -> String {
@@ -147,6 +153,11 @@ fn age(id: u64) -> String {
 fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     let head = text.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+}
+
+fn strip_suffix_ignore_case<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
+    let split = text.len().checked_sub(suffix.len())?;
+    text.get(split..)?.eq_ignore_ascii_case(suffix).then(|| &text[..split])
 }
 
 fn owo_dm_unread(name: &str) -> Option<u32> {
@@ -346,6 +357,18 @@ fn press_enter(hwnd: HWND) -> bool {
         ])
 }
 
+/// A held Shift turns Enter into a newline, and Ctrl or Alt turn letters into shortcuts.
+fn modifier_held() -> bool {
+    [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+        .iter()
+        .any(|vk| unsafe { GetAsyncKeyState(vk.0 as i32) } as u16 & 0x8000 != 0)
+}
+
+/// Discord fills an empty message box with a zero-width no-break space.
+fn composer_text(value: &str) -> &str {
+    value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{feff}' | '\u{200b}'))
+}
+
 fn alert(hwnd: HWND, title: &str, body: &str) {
     if let Err(e) = notify(title, body) {
         println!("[!] Could not send the Windows notification: {e}");
@@ -375,9 +398,11 @@ impl Hotkey {
     fn new(vk: VIRTUAL_KEY) -> Self {
         Self { vk, was_down: false }
     }
+    /// The low bit catches a tap that started and ended during a long scan.
     fn pressed(&mut self) -> bool {
-        let down = unsafe { GetAsyncKeyState(self.vk.0 as i32) } as u16 & 0x8000 != 0;
-        let fired = down && !self.was_down;
+        let state = unsafe { GetAsyncKeyState(self.vk.0 as i32) } as u16;
+        let down = state & 0x8000 != 0;
+        let fired = (down || state & 1 != 0) && !self.was_down;
         self.was_down = down;
         fired
     }
@@ -395,6 +420,7 @@ struct PageScan {
     newest_ban: Option<u64>,
     owo_dm_unread: u32,
     message_box: Option<IUIAutomationElement>,
+    message_box_text: String,
     url_is_discord: bool,
     messages: Vec<ChatMessage>,
 }
@@ -442,6 +468,7 @@ impl Uia {
                 newest_ban: None,
                 owo_dm_unread: 0,
                 message_box: None,
+                message_box_text: String::new(),
                 url_is_discord: false,
                 messages: Vec::new(),
             };
@@ -463,7 +490,7 @@ impl Uia {
                     continue;
                 }
                 if let Some(n) = owo_dm_unread(&name) {
-                    scan.owo_dm_unread += n;
+                    scan.owo_dm_unread = scan.owo_dm_unread.saturating_add(n);
                 }
                 if !name.is_empty()
                     && let Some(id) = summary_of.take()
@@ -473,13 +500,8 @@ impl Uia {
                 if el.CachedControlType().ok() != Some(UIA_EditControlTypeId) {
                     continue;
                 }
-                let value = el
-                    .GetCachedPropertyValue(UIA_ValueValuePropertyId)
-                    .ok()
-                    .and_then(|v: VARIANT| BSTR::try_from(&v).ok())
-                    .map(|b| b.to_string().to_lowercase())
-                    .unwrap_or_default();
-                if value.contains("discord.com") {
+                let value = element_value(&el, true).unwrap_or_default();
+                if is_discord_url(&value) {
                     scan.url_is_discord = true;
                     continue;
                 }
@@ -491,6 +513,7 @@ impl Uia {
                 if best_box.is_none_or(|b| rank > b) {
                     best_box = Some(rank);
                     scan.message_box = Some(el);
+                    scan.message_box_text = value;
                 }
             }
             Ok(scan)
@@ -498,31 +521,75 @@ impl Uia {
     }
 }
 
+fn element_value(el: &IUIAutomationElement, cached: bool) -> Option<String> {
+    let value = unsafe {
+        if cached {
+            el.GetCachedPropertyValue(UIA_ValueValuePropertyId)
+        } else {
+            el.GetCurrentPropertyValue(UIA_ValueValuePropertyId)
+        }
+    };
+    value.ok().and_then(|v: VARIANT| BSTR::try_from(&v).ok()).map(|b| b.to_string())
+}
+
+fn is_discord_url(value: &str) -> bool {
+    let rest = value.trim();
+    let rest = rest.strip_prefix("https://").unwrap_or(rest);
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
+    ["discord.com", "ptb.discord.com", "canary.discord.com"].iter().any(|host| {
+        strip_prefix_ignore_case(rest, host).is_some_and(|path| path.is_empty() || path.starts_with('/'))
+    })
+}
+
 struct Target {
     hwnd: HWND,
     title: String,
     exe: String,
+    desktop: bool,
 }
 
+impl Target {
+    fn accessibility_hint(&self) -> &'static str {
+        if self.desktop {
+            "Make sure a channel is open in the Discord app. If this persists, restart Discord."
+        } else {
+            "Make sure the Discord tab is visible. If this persists, start the browser\n    with the --force-renderer-accessibility flag."
+        }
+    }
+}
+
+/// Picks the frontmost Discord window: the desktop app, or a browser tab on discord.com.
 fn find_discord_window(uia: &Uia) -> Option<(Target, &'static str)> {
     let mut by_title: Option<Target> = None;
     for hwnd in top_level_windows() {
         let Some(exe) = process_exe(hwnd) else { continue };
-        if !BROWSERS.contains(&exe.as_str()) {
+        let desktop = DESKTOP_CLIENTS.contains(&exe.as_str());
+        if !desktop && !BROWSERS.contains(&exe.as_str()) {
             continue;
         }
         let title = window_title(hwnd);
         if title.is_empty() {
             continue;
         }
+        if desktop {
+            if is_desktop_title(&title) {
+                return Some((Target { hwnd, title, exe, desktop }, "the Discord app"));
+            }
+            continue;
+        }
         if uia.scan(hwnd).is_ok_and(|s| s.url_is_discord) {
-            return Some((Target { hwnd, title, exe }, "URL discord.com"));
+            return Some((Target { hwnd, title, exe, desktop }, "URL discord.com"));
         }
         if by_title.is_none() && is_discord_title(&title) {
-            by_title = Some(Target { hwnd, title, exe });
+            by_title = Some(Target { hwnd, title, exe, desktop });
         }
     }
     by_title.map(|t| (t, "its Discord tab title"))
+}
+
+/// The app's main window is titled "Discord" or "<page> - Discord"; its other windows are not.
+fn is_desktop_title(title: &str) -> bool {
+    strip_suffix_ignore_case(channel_key(title), "discord").is_some_and(|rest| rest.is_empty() || rest.ends_with(" - "))
 }
 
 /// Discord web titles start with "Discord" (after unread badges); other pages only mention it.
@@ -546,7 +613,7 @@ fn wait_for_page(uia: &Uia, hwnd: HWND) -> Result<PageScan> {
 fn report_target(t: &Target, reason: &str) {
     let m = monitor_of(t.hwnd);
     println!("[OK] Found Discord by {reason}");
-    println!("     Browser : {}", t.exe);
+    println!("     {} : {}", if t.desktop { "App    " } else { "Browser" }, t.exe);
     println!("     Title   : {}", t.title);
     println!("     Monitor : #{} of {}{}", m.index, m.count, if m.primary { " [primary]" } else { "" });
 }
@@ -556,12 +623,43 @@ enum Sent {
     No,
     /// Focus moved mid-command, so part of it may be left in the message box.
     Interrupted,
+    /// The box did not hold exactly the command, so Enter was not pressed.
+    Unconfirmed,
 }
 
 enum State {
     Running,
     Paused,
     Banned,
+}
+
+struct Timer {
+    command: &'static str,
+    every: Duration,
+    next: Instant,
+}
+
+fn timers(settings: &Settings, now: Instant) -> Vec<Timer> {
+    let owo = settings.owo.then_some(("owo", OWO_EVERY));
+    let pray = settings.pray.then_some((PRAY_COMMAND, PRAY_EVERY));
+    owo.into_iter()
+        .chain(settings.mode.commands().iter().map(|&command| (command, CYCLE)))
+        .chain(pray)
+        .map(|(command, every)| Timer { command, every, next: now })
+        .collect()
+}
+
+fn every_text(every: Duration) -> String {
+    match every.as_secs() {
+        s if s < 60 => format!("{s} s"),
+        s => format!("{} min", s / 60),
+    }
+}
+
+enum Job {
+    Timer(usize),
+    Gem,
+    Daily(daily::Daily),
 }
 
 struct Zippy {
@@ -572,22 +670,22 @@ struct Zippy {
     dm_baseline: u32,
     newest_seen: u64,
     state: State,
-    next_command: usize,
-    next_at: Instant,
-    cycle_start: Instant,
+    timers: Vec<Timer>,
+    next_send: Instant,
     next_scan: Instant,
     unreadable_scans: u32,
     scrolled_up_reported: bool,
-    commands: &'static [&'static str],
     gems: Option<GemKeeper>,
     gem_queue: VecDeque<String>,
-    next_gem_at: Instant,
+    gem_since: Instant,
+    dailies: Dailies,
+    daily_since: Option<Instant>,
 }
 
 impl Zippy {
     fn pause(&mut self, reason: &str, alarm: bool) {
         self.state = State::Paused;
-        println!("\n[{}] Macro has Stopped Temporarily! {reason}", clock());
+        println!("\n[{}] Zippy has Stopped Temporarily! {reason}", clock());
         println!("       Solve the captcha or go back to the original channel, then press F8 to resume.");
         if alarm {
             alert(
@@ -612,6 +710,14 @@ impl Zippy {
 
     fn resume(&mut self) {
         let confirming_ban = matches!(self.state, State::Banned);
+        // The desktop app recreates its window after it restarts for an update.
+        if !unsafe { IsWindow(self.target.hwnd) }.as_bool()
+            && let Some((target, _)) = find_discord_window(&self.uia)
+            && channel_key(&target.title) == self.channel
+        {
+            println!("[OK] Found the Discord window again ({}).", target.exe);
+            self.target = target;
+        }
         let title = window_title(self.target.hwnd);
         if channel_key(&title) != self.channel {
             println!("[!] The active tab/channel differs from the one at startup:");
@@ -644,8 +750,8 @@ impl Zippy {
         self.newest_seen = newest;
         self.scrolled_up_reported = false;
         self.state = State::Running;
-        self.next_command = 0;
-        self.next_at = Instant::now();
+        self.next_send = Instant::now();
+        self.dailies.forget_pending();
         self.next_scan = Instant::now() + SCAN_EVERY;
         println!("[{}] Zippy running again.", clock());
     }
@@ -654,6 +760,10 @@ impl Zippy {
         let hwnd = self.target.hwnd;
         if !unsafe { IsWindow(hwnd) }.as_bool() {
             self.pause("Discord window closed.", true);
+            return None;
+        }
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            self.pause("Discord window is hidden (closed to the tray?). Open it again.", false);
             return None;
         }
         let title = window_title(hwnd);
@@ -696,8 +806,7 @@ impl Zippy {
                     "[!] Chat messages are not readable ({} accessibility elements); waiting without typing.",
                     scan.elements
                 );
-                println!("    Make sure the Discord tab is visible. If this persists, start the browser");
-                println!("    with the --force-renderer-accessibility flag.");
+                println!("    {}", self.target.accessibility_hint());
             }
             return None;
         };
@@ -716,15 +825,23 @@ impl Zippy {
             for action in gems.observe(&scan.messages) {
                 let command = action.command();
                 if !self.gem_queue.contains(&command) {
+                    if self.gem_queue.is_empty() {
+                        self.gem_since = Instant::now();
+                    }
                     self.gem_queue.push_back(command);
                 }
             }
         }
+        self.dailies.observe(&scan.messages, Instant::now(), unix_ms_now());
         Some(scan)
     }
 
     fn send(&mut self, command: &str, message_box: &IUIAutomationElement) -> Sent {
         let hwnd = self.target.hwnd;
+        if modifier_held() {
+            println!("[!] A Shift, Ctrl, Alt or Windows key is held down; retrying later.");
+            return Sent::No;
+        }
         let previous = unsafe { GetForegroundWindow() };
         if !focus_window(hwnd) {
             println!("[!] Windows refused to focus the Discord window; retrying later.");
@@ -739,7 +856,20 @@ impl Zippy {
             println!("[!] Focus moved before typing; cancelled.");
             return Sent::No;
         }
-        if !type_text(hwnd, command) || !press_enter(hwnd) {
+        if !type_text(hwnd, command) {
+            return Sent::Interrupted;
+        }
+        // Keys pressed by the user while typing, or a blocked SendInput, show up as a mismatch here.
+        let typed = (0..6).any(|attempt| {
+            if attempt > 0 {
+                sleep(Duration::from_millis(50));
+            }
+            element_value(message_box, false).is_some_and(|v| composer_text(&v) == command)
+        });
+        if !typed {
+            return Sent::Unconfirmed;
+        }
+        if modifier_held() || !press_enter(hwnd) {
             return Sent::Interrupted;
         }
         sleep(Duration::from_millis(150));
@@ -750,63 +880,114 @@ impl Zippy {
     }
 
     /// Always scan right before typing, so nothing is sent while a captcha is up.
-    fn scan_and_send(&mut self, command: &str) -> bool {
-        let Some(scan) = self.check() else { return false };
+    /// Returns the newest message ID seen before typing, which every reply to the command comes after.
+    fn scan_and_send(&mut self, command: &str) -> Option<u64> {
+        let scan = self.check()?;
         self.next_scan = Instant::now() + SCAN_EVERY;
         let Some(message_box) = scan.message_box else {
-            println!("[!] Message box not found. Make sure the Discord tab is active and a channel is open.");
-            return false;
+            println!("[!] Message box not found. Make sure a Discord channel is open.");
+            return None;
         };
-        let earliest_echo = snowflake_at(unix_ms_now().saturating_sub(CLOCK_SKEW.as_millis() as u64));
+        if !composer_text(&scan.message_box_text).is_empty() {
+            self.pause("The Discord message box is not empty (a draft?). Clear it, then press F8.", false);
+            return None;
+        }
+        let before = self.newest_seen;
         match self.send(command, &message_box) {
             Sent::Yes => {}
-            Sent::No => return false,
+            Sent::No => return None,
             Sent::Interrupted => {
                 self.pause(
                     &format!("Focus moved while typing \"{command}\". Clear any leftover text in the message box."),
                     false,
                 );
-                return false;
+                return None;
+            }
+            Sent::Unconfirmed => {
+                self.pause(
+                    &format!(
+                        "\"{command}\" did not appear in the message box as typed, so it was not sent. Clear the \
+                         message box, then press F8. If Discord runs as administrator, run Zippy as administrator too."
+                    ),
+                    false,
+                );
+                return None;
             }
         }
         if let Some(gems) = &mut self.gems {
-            gems.sent(command, earliest_echo);
+            gems.sent(command, before + 1);
         }
         println!("[{}] sent: {command}", clock());
-        true
+        Some(before)
+    }
+
+    /// The job that has waited longest goes first, so a busy timer cannot starve the rest.
+    /// Ties go in this order: owo, owoh, owob, gem upkeep, owopray, the daily commands.
+    fn next_job(&self, now: Instant, daily: Option<daily::Daily>) -> Option<Job> {
+        let mut gem = (!self.gem_queue.is_empty()).then_some(self.gem_since);
+        let mut best: Option<(Instant, Job)> = None;
+        let mut offer = |due: Instant, job: Job| {
+            if best.as_ref().is_none_or(|(earliest, _)| due < *earliest) {
+                best = Some((due, job));
+            }
+        };
+        for (i, timer) in self.timers.iter().enumerate() {
+            if timer.command == PRAY_COMMAND
+                && let Some(since) = gem.take()
+            {
+                offer(since, Job::Gem);
+            }
+            if now >= timer.next {
+                offer(timer.next, Job::Timer(i));
+            }
+        }
+        if let Some(since) = gem {
+            offer(since, Job::Gem);
+        }
+        if let (Some(daily), Some(since)) = (daily, self.daily_since) {
+            offer(since, Job::Daily(daily));
+        }
+        best.map(|(_, job)| job)
+    }
+
+    fn run(&mut self, job: Job) {
+        let sent = match job {
+            Job::Timer(i) => {
+                let sent = self.scan_and_send(self.timers[i].command).is_some();
+                if sent {
+                    self.timers[i].next = Instant::now() + self.timers[i].every;
+                }
+                sent
+            }
+            Job::Gem => {
+                let command = self.gem_queue[0].clone();
+                let sent = self.scan_and_send(&command).is_some();
+                if sent {
+                    self.gem_queue.pop_front();
+                    self.gem_since = Instant::now();
+                }
+                sent
+            }
+            Job::Daily(daily) => match self.scan_and_send(daily.command()) {
+                Some(before) => {
+                    self.dailies.sent(daily, before, Instant::now(), unix_ms_now());
+                    self.daily_since = None;
+                    true
+                }
+                None => false,
+            },
+        };
+        self.next_send = Instant::now() + if sent { GAP_BETWEEN_COMMANDS } else { SCAN_EVERY };
     }
 
     fn tick(&mut self) {
         let now = Instant::now();
-        let gem_slot = self.next_command == 0
-            && !self.gem_queue.is_empty()
-            && now >= self.next_gem_at
-            && now + GAP_BETWEEN_COMMANDS <= self.next_at;
-        if now >= self.next_at {
-            let command = self.commands[self.next_command];
-            if !self.scan_and_send(command) {
-                self.next_at = Instant::now() + SCAN_EVERY;
-                return;
-            }
-            if self.next_command == 0 {
-                self.cycle_start = now;
-            }
-            self.next_command += 1;
-            if self.next_command == self.commands.len() {
-                self.next_command = 0;
-                self.next_at = self.cycle_start + CYCLE;
-            } else {
-                self.next_at = Instant::now() + GAP_BETWEEN_COMMANDS;
-            }
-            self.next_gem_at = Instant::now() + GAP_BETWEEN_COMMANDS;
-        } else if gem_slot {
-            let command = self.gem_queue[0].clone();
-            if self.scan_and_send(&command) {
-                self.gem_queue.pop_front();
-                self.next_gem_at = Instant::now() + GAP_BETWEEN_COMMANDS;
-            } else {
-                self.next_gem_at = Instant::now() + SCAN_EVERY;
-            }
+        let daily = self.dailies.next_due(now, unix_ms_now());
+        self.daily_since = daily.and(self.daily_since.or(Some(now)));
+        if now >= self.next_send
+            && let Some(job) = self.next_job(now, daily)
+        {
+            self.run(job);
         } else if now >= self.next_scan {
             self.next_scan = now + SCAN_EVERY;
             self.check();
@@ -864,16 +1045,51 @@ fn update(confirmed: bool) -> Option<std::path::PathBuf> {
     }
 }
 
+/// A second instance would type every command twice into the same channel.
+struct InstanceLock(HANDLE);
+
+impl InstanceLock {
+    fn acquire() -> Result<Option<Self>> {
+        unsafe {
+            let handle = CreateMutexW(None, true, w!("Local\\Zippy.SingleInstance"))?;
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                let _ = CloseHandle(handle);
+                return Ok(None);
+            }
+            Ok(Some(Self(handle)))
+        }
+    }
+}
+
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = ReleaseMutex(self.0);
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    let has_flag = |flag: &str| std::env::args().any(|a| a == flag);
+    let check_only = has_flag("--check");
+    let test_notification = has_flag("--test-notification");
+    let lock = if check_only || test_notification {
+        None
+    } else {
+        let Some(lock) = InstanceLock::acquire()? else {
+            println!("[!] Zippy is already running. Use that window, or press F10 there to quit it first.");
+            return Ok(());
+        };
+        Some(lock)
+    };
     update::remove_previous();
-    if std::env::args().any(|a| a == "--update") {
+    if has_flag("--update") {
         if update(true).is_some() {
             println!("     Start zippy.exe again to use it.");
         }
         return Ok(());
     }
-    let check_only = std::env::args().any(|a| a == "--check");
-    let test_notification = std::env::args().any(|a| a == "--test-notification");
     let settings_path = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(settings::FILE_NAME)))
@@ -891,16 +1107,26 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    println!(
-        "Zippy: {} every {} seconds. F8 = pause/resume, F10 = quit.",
-        settings.mode.commands().join("/"),
-        CYCLE.as_secs()
-    );
+    println!("Zippy: F8 = pause/resume, F10 = quit.");
+    for timer in timers(&settings, Instant::now()) {
+        println!("  {:<8} every {}", timer.command, every_text(timer.every));
+    }
+    let dailies: Vec<&str> = settings.enabled_dailies().map(|d| d.command()).collect();
+    if !dailies.is_empty() {
+        println!("  {}: until today's limit is used up", dailies.join(", "));
+    }
+    if !settings.owo && !settings.pray && dailies.is_empty() {
+        println!("  owo, owopray and the daily commands are off. To use them, add these lines to settings.ini:");
+        println!("  owo = on, pray = on, run = on, pup = on, piku = on, army = on (one per line)");
+    }
     println!("Settings: {} ({})\n", settings.describe(), settings_path.display());
     if settings.update_check
+        && !check_only
+        && !test_notification
         && let Some(exe) = update(false)
     {
         println!("     Restarting...\n");
+        drop(lock);
         if let Err(e) = std::process::Command::new(&exe).args(std::env::args().skip(1)).spawn() {
             println!("[!] Could not restart: {e}. Start zippy.exe again.");
         }
@@ -922,7 +1148,7 @@ fn main() -> Result<()> {
         if let Some(found) = find_discord_window(&uia) {
             break found;
         }
-        println!("[..] No Discord tab found in any browser yet. Looking again in 3 seconds...");
+        println!("[..] No Discord app window or browser tab found yet. Looking again in 3 seconds...");
         for _ in 0..30 {
             sleep(Duration::from_millis(100));
             if f10.pressed() {
@@ -942,6 +1168,7 @@ fn main() -> Result<()> {
         println!("     Page elements  : {}", initial.elements);
         println!("     URL discord.com: {}", initial.url_is_discord);
         println!("     Message box    : {box_name}");
+        println!("     Box text       : \"{}\"", initial.message_box_text);
         println!("     Newest message : {}", describe(initial.newest_message));
         println!("     Newest captcha : {}", describe(initial.newest_captcha));
         println!("     Newest ban     : {}", describe(initial.newest_ban));
@@ -951,24 +1178,29 @@ fn main() -> Result<()> {
 
     let channel = channel_key(&target.title).to_owned();
     let now = Instant::now();
+    // A PC clock running ahead would otherwise mark real captchas as already seen.
+    let now_ms = initial.newest_message.map_or(unix_ms_now(), |id| unix_ms_now().min(snowflake_unix_ms(id)));
     let mut m = Zippy {
         uia,
         target,
         channel,
-        acknowledged: snowflake_at(unix_ms_now().saturating_sub(STARTUP_LOOKBACK.as_millis() as u64)),
+        acknowledged: snowflake_at(now_ms.saturating_sub(STARTUP_LOOKBACK.as_millis() as u64)),
         dm_baseline: initial.owo_dm_unread,
         newest_seen: initial.newest_message.unwrap_or(0),
         state: State::Running,
-        next_command: 0,
-        next_at: now,
-        cycle_start: now,
+        timers: timers(&settings, now),
+        next_send: now,
         next_scan: now,
         unreadable_scans: 0,
         scrolled_up_reported: false,
-        commands: settings.mode.commands(),
-        gems: settings.mode.hunts().then(|| GemKeeper::new(snowflake_at(unix_ms_now()), settings.gems)),
+        gems: settings
+            .mode
+            .hunts()
+            .then(|| GemKeeper::new(initial.newest_message.unwrap_or_else(|| snowflake_at(now_ms)), settings.gems)),
         gem_queue: VecDeque::new(),
-        next_gem_at: now,
+        gem_since: now,
+        dailies: Dailies::new(settings.enabled_dailies()),
+        daily_since: None,
     };
     println!("     Locked to channel: {}\n", m.channel);
 
@@ -977,7 +1209,8 @@ fn main() -> Result<()> {
     } else if let Some(id) = initial.newest_captcha.filter(|&id| id > m.acknowledged) {
         m.pause(&format!("New OwO captcha message visible at startup ({}).", age(id)), true);
     } else if initial.newest_message.is_none() {
-        m.pause("Discord chat messages are not readable (browser accessibility off?).", false);
+        m.pause("Discord chat messages are not readable (accessibility off?).", false);
+        println!("       {}", m.target.accessibility_hint());
     } else if initial.owo_dm_unread > 0 {
         m.pause(
             &format!("{} unread OwO DMs, check them for a captcha first, if there isn't any, ignore this message.", initial.owo_dm_unread),
@@ -1052,6 +1285,32 @@ mod tests {
         assert_eq!(owo_dm_unread("owobot , 3 unread messages"), None);
         assert_eq!(owo_dm_unread("carl-bot , 2 unread messages"), None);
         assert_eq!(owo_dm_unread("1 mention, owo"), None);
+    }
+
+    #[test]
+    fn desktop_title_matches_only_the_main_window() {
+        assert!(is_desktop_title("#owo | Server - Discord"));
+        assert!(is_desktop_title("(2) • Friends - Discord"));
+        assert!(is_desktop_title("Discord"));
+        assert!(!is_desktop_title("Discord Updater"));
+        assert!(!is_desktop_title("MyDiscord"));
+        assert!(!is_desktop_title(""));
+    }
+
+    #[test]
+    fn only_the_address_bar_counts_as_a_discord_url() {
+        assert!(is_discord_url("discord.com/channels/1/2"));
+        assert!(is_discord_url("https://ptb.discord.com/channels/@me"));
+        assert!(is_discord_url("discord.com"));
+        assert!(!is_discord_url("check discord.com/invite/abc"));
+        assert!(!is_discord_url("discord.community/forum"));
+    }
+
+    #[test]
+    fn empty_message_box_ignores_discords_placeholder_character() {
+        assert_eq!(composer_text("\u{feff}"), "");
+        assert_eq!(composer_text("owoh\u{feff}\n"), "owoh");
+        assert_eq!(composer_text("half a draft"), "half a draft");
     }
 
     #[test]

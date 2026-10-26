@@ -1,9 +1,10 @@
 use std::ffi::c_void;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Data::Json::JsonObject;
 use windows::Win32::Networking::WinHttp::{
@@ -18,6 +19,7 @@ use windows::core::{Error, HSTRING, PCWSTR, h, w};
 const REPO: &str = "lairegodd/zippy";
 const ASSET: &str = "zippy.exe";
 const MAX_DOWNLOAD: usize = 32 << 20;
+const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub struct Release {
@@ -59,6 +61,9 @@ fn newer_release(json: &str, current: &str) -> Result<Option<Release>, String> {
             continue;
         }
         let url = asset.GetNamedString(h!("browser_download_url")).map_err(bad)?.to_string();
+        if !url.starts_with(&format!("https://github.com/{REPO}/releases/download/")) {
+            return Err(format!("{tag} points {ASSET} at an unexpected address: {url}"));
+        }
         let digest = asset.GetNamedString(h!("digest")).map(|d| d.to_string()).unwrap_or_default();
         let sha256 = digest
             .strip_prefix("sha256:")
@@ -83,7 +88,14 @@ pub fn install(release: &Release) -> Result<PathBuf, String> {
     }
     let new = exe.with_extension("new.exe");
     let old = old_exe(&exe);
-    fs::write(&new, &bytes).map_err(|e| format!("cannot write {}: {e}", new.display()))?;
+    let written = fs::File::create(&new).and_then(|mut file| {
+        file.write_all(&bytes)?;
+        file.sync_all()
+    });
+    if let Err(e) = written {
+        let _ = fs::remove_file(&new);
+        return Err(format!("cannot write {}: {e}", new.display()));
+    }
     let _ = fs::remove_file(&old);
     if let Err(e) = fs::rename(&exe, &old) {
         let _ = fs::remove_file(&new);
@@ -184,8 +196,12 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
             return Err(format!("{host} answered HTTP {status}"));
         }
 
+        let deadline = Instant::now() + DOWNLOAD_DEADLINE;
         let mut body = Vec::new();
         loop {
+            if Instant::now() > deadline {
+                return Err(format!("{host} is too slow; try again later"));
+            }
             let mut available = 0u32;
             WinHttpQueryDataAvailable(request.0, &mut available).map_err(net)?;
             if available == 0 {
@@ -240,6 +256,8 @@ mod tests {
         assert!(newer_release(&release_json("v1.0.0", &exe_asset(&digest)), "1.1.0").unwrap().is_none());
         assert!(newer_release(&release_json("v1.2.0", &exe_asset("null")), "1.1.0").unwrap_err().contains("checksum"));
         assert!(newer_release(&release_json("v1.2.0", r#"{"name":"other.zip"}"#), "1.1.0").is_err());
+        let foreign = format!(r#"{{"name":"zippy.exe","browser_download_url":"https://evil.example/zippy.exe","digest":{digest}}}"#);
+        assert!(newer_release(&release_json("v1.2.0", &foreign), "1.1.0").unwrap_err().contains("unexpected address"));
     }
 
     #[test]

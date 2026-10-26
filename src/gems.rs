@@ -113,19 +113,22 @@ impl GemKeeper {
         self.resolve(fresh_hunt)
     }
 
+    /// Others in the channel send the same commands, so only an echo from a single author is trusted.
     fn learn_player(&mut self, messages: &[ChatMessage]) {
         let Some((command, earliest)) = &self.player_probe else { return };
-        let echo = messages
+        let mut authors = messages
             .iter()
             .filter(|m| m.id >= *earliest)
-            .filter_map(|m| Some((m.id, split_summary(&m.summary)?)))
-            .filter(|(_, (_, content))| content == command)
-            .max_by_key(|(id, _)| *id);
-        if let Some((_, (author, _))) = echo {
-            println!("[GEM] Player name: {author}");
-            self.player = Some(author.to_owned());
-            self.player_probe = None;
+            .filter_map(|m| split_summary(&m.summary))
+            .filter(|(_, content)| content == command)
+            .map(|(author, _)| author);
+        let Some(author) = authors.next() else { return };
+        if authors.any(|other| other != author) {
+            return;
         }
+        println!("[GEM] Player name: {author}");
+        self.player = Some(author.to_owned());
+        self.player_probe = None;
     }
 
     fn record_hunt(&mut self, active: &BTreeSet<u8>) {
@@ -205,14 +208,14 @@ fn describe_stock(stock: &BTreeMap<u16, u32>) -> String {
     stock.iter().map(|(id, count)| format!("{id}x{count}")).collect::<Vec<_>>().join(", ")
 }
 
-fn split_summary(summary: &str) -> Option<(&str, &str)> {
+pub fn split_summary(summary: &str) -> Option<(&str, &str)> {
     let (author, rest) = summary.split_once(" , ")?;
     let content = rest.rsplit_once(" , ").map_or(rest, |(content, _time)| content);
     let author = author.split_once(" Server Tag:").map_or(author, |(name, _)| name);
     Some((author.trim(), content.trim()))
 }
 
-fn owo_content(summary: &str) -> Option<&str> {
+pub fn owo_content(summary: &str) -> Option<&str> {
     summary.strip_prefix(OWO_AUTHOR)?.strip_prefix(" , ")
 }
 
@@ -310,6 +313,17 @@ mod tests {
         keeper.observe(&[msg(101, "Player Server Tag: TAG , owoh , 12:00 PM")]);
         assert_eq!(keeper.player.as_deref(), Some("Player"));
         keeper
+    }
+
+    #[test]
+    fn player_is_not_learned_while_another_user_echoes_the_same_command() {
+        let mut keeper = GemKeeper::new(100, HIGHEST);
+        keeper.sent(HUNT_COMMAND, 101);
+        keeper.observe(&[msg(101, "Player , owoh , 12:00 PM"), msg(102, "Other , owoh , 12:00 PM")]);
+        assert_eq!(keeper.player, None);
+        keeper.sent(HUNT_COMMAND, 200);
+        keeper.observe(&[msg(102, "Other , owoh , 12:00 PM"), msg(200, "Player , owoh , 12:01 PM")]);
+        assert_eq!(keeper.player.as_deref(), Some("Player"));
     }
 
     #[test]

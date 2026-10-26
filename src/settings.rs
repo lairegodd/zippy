@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::daily::Daily;
 use crate::gems::{GEM_TYPES, HUNT_COMMAND};
 
 pub const FILE_NAME: &str = "settings.ini";
@@ -17,6 +18,16 @@ mode = both
 gem1 = 57
 gem3 = 71
 gem4 = 78
+
+# Plain \"owo\" every 11 seconds, and \"owopray\" every 5 minutes: on or off.
+owo = on
+pray = on
+
+# Daily commands, sent until OwO says today's limit is used up: on or off.
+run = on
+pup = on
+piku = on
+army = on
 
 # Check GitHub for a newer Zippy at startup: on or off.
 update_check = on
@@ -47,13 +58,27 @@ impl Mode {
 pub struct Settings {
     pub mode: Mode,
     pub gems: [u16; 3],
+    pub owo: bool,
+    pub pray: bool,
+    pub daily: [bool; Daily::ALL.len()],
     pub update_check: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { mode: Mode::Both, gems: GEM_TYPES.map(|(_, ids)| *ids.end()), update_check: true }
+        Self {
+            mode: Mode::Both,
+            gems: GEM_TYPES.map(|(_, ids)| *ids.end()),
+            owo: true,
+            pray: true,
+            daily: [true; Daily::ALL.len()],
+            update_check: true,
+        }
     }
+}
+
+fn on_off(flag: bool) -> &'static str {
+    if flag { "on" } else { "off" }
 }
 
 impl Settings {
@@ -69,8 +94,9 @@ impl Settings {
         }
     }
 
+    /// Commands added after a file was written stay off until it names them, so an update never starts new ones.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let mut settings = Self::default();
+        let mut settings = Self { owo: false, pray: false, daily: [false; Daily::ALL.len()], ..Self::default() };
         for (number, line) in text.lines().enumerate().map(|(i, l)| (i + 1, l.trim())) {
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -88,11 +114,17 @@ impl Settings {
                 };
                 continue;
             }
-            if key == "update_check" {
-                settings.update_check = match value.to_lowercase().as_str() {
+            let switch = match key.as_str() {
+                "owo" => Some(&mut settings.owo),
+                "pray" => Some(&mut settings.pray),
+                "update_check" => Some(&mut settings.update_check),
+                _ => Daily::ALL.iter().position(|d| d.key() == key).map(|i| &mut settings.daily[i]),
+            };
+            if let Some(flag) = switch {
+                *flag = match value.to_lowercase().as_str() {
                     "on" => true,
                     "off" => false,
-                    _ => return Err(format!("line {number}: update_check must be on or off, not `{value}`")),
+                    _ => return Err(format!("line {number}: {key} must be on or off, not `{value}`")),
                 };
                 continue;
             }
@@ -109,11 +141,25 @@ impl Settings {
         Ok(settings)
     }
 
+    pub fn enabled_dailies(&self) -> impl Iterator<Item = Daily> + '_ {
+        Daily::ALL.into_iter().zip(self.daily).filter(|(_, on)| *on).map(|(daily, _)| daily)
+    }
+
     pub fn describe(&self) -> String {
         let gems: Vec<String> =
             GEM_TYPES.iter().zip(self.gems).map(|((kind, _), id)| format!("gem{kind}={id}")).collect();
-        let update_check = if self.update_check { "on" } else { "off" };
-        format!("mode={:?}, {}, update_check={update_check}", self.mode, gems.join(", ")).to_lowercase()
+        let dailies: Vec<String> =
+            Daily::ALL.iter().zip(self.daily).map(|(d, on)| format!("{}={}", d.key(), on_off(on))).collect();
+        format!(
+            "mode={:?}, {}, owo={}, pray={}, {}, update_check={}",
+            self.mode,
+            gems.join(", "),
+            on_off(self.owo),
+            on_off(self.pray),
+            dailies.join(", "),
+            on_off(self.update_check)
+        )
+        .to_lowercase()
     }
 }
 
@@ -130,10 +176,20 @@ mod tests {
     #[test]
     fn reads_mode_and_gem_choices() {
         let settings = Settings::parse("MODE = Hunt\ngem1=54\n  gem4 = 72  \n# gem3 = 65\n").unwrap();
-        assert_eq!(settings, Settings { mode: Mode::Hunt, gems: [54, 71, 72], update_check: true });
+        assert_eq!((settings.mode, settings.gems), (Mode::Hunt, [54, 71, 72]));
         assert_eq!(Settings::parse("mode = battle").unwrap().mode, Mode::Battle);
         assert!(!Settings::parse("update_check = OFF").unwrap().update_check);
         assert!(Settings::parse("update_check = maybe").unwrap_err().contains("on or off"));
+    }
+
+    #[test]
+    fn extra_commands_are_on_only_when_the_file_says_so() {
+        let settings = Settings::parse("owo = on\nrun = on\npiku = ON\npup = off\n").unwrap();
+        assert!(settings.owo && !settings.pray);
+        assert_eq!(settings.enabled_dailies().collect::<Vec<_>>(), [Daily::Run, Daily::Piku]);
+        let older_file = Settings::parse("mode = both\ngem1 = 57\nupdate_check = on\n").unwrap();
+        assert!(!older_file.owo && !older_file.pray && older_file.enabled_dailies().next().is_none());
+        assert!(Settings::parse("run = yes").unwrap_err().contains("run must be on or off"));
     }
 
     #[test]
