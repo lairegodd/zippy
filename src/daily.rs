@@ -1,9 +1,14 @@
+use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
 
 use crate::gems::{ChatMessage, owo_content, split_summary};
 use crate::snowflake_unix_ms;
 
-const SPACING: Duration = Duration::from_secs(20);
+pub const FILE_NAME: &str = "zippy-dailies.json";
+
 const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const SILENT_TRIES: u32 = 2;
 const MAX_SENDS_PER_DAY: u32 = 40;
@@ -18,6 +23,7 @@ const RECHECK_WINDOW_MS: u64 = 3 * HOUR_MS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Daily {
+    Claim,
     Run,
     Pup,
     Piku,
@@ -25,10 +31,11 @@ pub enum Daily {
 }
 
 impl Daily {
-    pub const ALL: [Daily; 4] = [Daily::Run, Daily::Pup, Daily::Piku, Daily::Army];
+    pub const ALL: [Daily; 5] = [Daily::Claim, Daily::Run, Daily::Pup, Daily::Piku, Daily::Army];
 
     pub fn key(self) -> &'static str {
         match self {
+            Daily::Claim => "daily",
             Daily::Run => "run",
             Daily::Pup => "pup",
             Daily::Piku => "piku",
@@ -38,6 +45,7 @@ impl Daily {
 
     pub fn command(self) -> &'static str {
         match self {
+            Daily::Claim => "owodaily",
             Daily::Run => "oworun",
             Daily::Pup => "owopup",
             Daily::Piku => "owopiku",
@@ -45,8 +53,17 @@ impl Daily {
         }
     }
 
+    /// OwO's cooldown plus two seconds for lag, counted from the send.
+    fn cooldown(self) -> Duration {
+        match self {
+            Daily::Army => Duration::from_secs(12),
+            Daily::Claim | Daily::Run | Daily::Pup | Daily::Piku => Duration::from_secs(62),
+        }
+    }
+
     fn markers(self) -> &'static [&'static str] {
         match self {
+            Daily::Claim => &["here is your daily", "you need to wait", "your next daily"],
             Daily::Run => &[":run:", "kilometer"],
             Daily::Pup => &[":puppy:", "pupp"],
             Daily::Piku => &["🥕", "carrot", "pikpik"],
@@ -54,17 +71,26 @@ impl Daily {
         }
     }
 
-    /// The first use of a day states the daily limit ("You can adopt 3 puppies today"); later uses say "2/3".
-    fn remaining(self, content: &str) -> Option<u32> {
+    /// Uses left today and, when the reply states it, today's limit. The first use of a day states the
+    /// limit ("You can adopt 3 puppies today"); later uses say "2/3". `owodaily` is one use a day, and
+    /// both its claim and its "wait" reply mean none is left.
+    fn remaining(self, content: &str) -> Option<(u32, Option<u32>)> {
+        if self == Daily::Claim {
+            let lower = content.to_lowercase();
+            return (lower.contains("here is your daily") || lower.contains("you need to wait")).then_some((0, Some(1)));
+        }
         if self == Daily::Run && content.contains("too tired") {
-            return Some(0);
+            return Some((0, None));
         }
         today_lines(content).find_map(|line| {
-            used_of_limit(line).or_else(|| match self {
-                Daily::Run => None,
-                Daily::Pup => number_after(line, "You can adopt ").map(|limit| limit.saturating_sub(1)),
-                Daily::Piku => number_after(line, "You can still harvest ").map(|limit| limit.saturating_sub(1)),
-                Daily::Army => number_after(line.split_once("Today's remaining")?.1, ":"),
+            used_of_limit(line).or_else(|| {
+                let stated = |limit: u32| (limit.saturating_sub(1), Some(limit));
+                match self {
+                    Daily::Claim | Daily::Run => None,
+                    Daily::Pup => number_after(line, "You can adopt ").map(stated),
+                    Daily::Piku => number_after(line, "You can still harvest ").map(stated),
+                    Daily::Army => number_after(line.split_once("Today's remaining")?.1, ":").map(|left| (left, None)),
+                }
             })
         })
     }
@@ -78,10 +104,11 @@ fn today_lines(content: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-fn used_of_limit(line: &str) -> Option<u32> {
+fn used_of_limit(line: &str) -> Option<(u32, Option<u32>)> {
     line.split_whitespace().find_map(|word| {
         let (used, limit) = word.split_once('/')?;
-        Some(limit.parse::<u32>().ok()?.saturating_sub(used.parse().ok()?))
+        let limit = limit.parse::<u32>().ok()?;
+        Some((limit.saturating_sub(used.parse().ok()?), Some(limit)))
     })
 }
 
@@ -148,7 +175,8 @@ fn wait_text(ms: u64) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
     Unknown,
-    Left(u32),
+    /// Uses left, as read on OwO day `day`; a new day's count is not compared with an old one.
+    Left { left: u32, day: i64 },
     UsedUp { retry_at: u64 },
 }
 
@@ -162,6 +190,8 @@ struct Pending {
 struct Tracker {
     daily: Daily,
     status: Status,
+    /// Today's limit, as stated by OwO or inferred from the most uses seen left; kept across days as a first guess.
+    limit: Option<u32>,
     pending: Option<Pending>,
     next: Option<Instant>,
     silent: u32,
@@ -169,13 +199,55 @@ struct Tracker {
 }
 
 impl Tracker {
+    fn new(daily: Daily) -> Self {
+        Self { daily, status: Status::Unknown, limit: None, pending: None, next: None, silent: 0, sends_today: (0, 0) }
+    }
+
+    /// A count is only restored on the OwO day it was read.
+    fn restore(&mut self, entry: &Value, unix_ms: u64) {
+        let number = |key: &str| entry[key].as_u64().and_then(|v| u32::try_from(v).ok());
+        let today = owo_day(unix_ms);
+        let on_today = |key: &str| entry[key].as_i64() == Some(today);
+        self.limit = number("limit").filter(|&limit| limit > 0);
+        if on_today("sends_day")
+            && let Some(sends) = number("sends")
+        {
+            self.sends_today = (today, sends);
+        }
+        // A hand-edited or corrupt time must not hold a command back for longer than one OwO day.
+        let retry_at = entry["retry_at"].as_u64().filter(|&at| at > unix_ms && at <= next_reset(unix_ms) + HOUR_MS);
+        if let Some(retry_at) = retry_at {
+            self.status = Status::UsedUp { retry_at };
+        } else if on_today("left_day")
+            && let Some(left) = number("left")
+        {
+            self.status = Status::Left { left, day: today };
+        }
+    }
+
+    fn snapshot(&self) -> Value {
+        let (left, left_day) = match self.status {
+            Status::Left { left, day } => (Some(left), Some(day)),
+            _ => (None, None),
+        };
+        let (sends_day, sends) = self.sends_today;
+        json!({
+            "left": left,
+            "left_day": left_day,
+            "retry_at": if let Status::UsedUp { retry_at } = self.status { Some(retry_at) } else { None },
+            "limit": self.limit,
+            "sends": sends,
+            "sends_day": sends_day,
+        })
+    }
+
     fn due(&self, now: Instant, unix_ms: u64) -> bool {
         let (day, sends) = self.sends_today;
         self.pending.is_none()
             && self.next.is_none_or(|next| now >= next)
             && !(day == owo_day(unix_ms) && sends >= MAX_SENDS_PER_DAY)
             && match self.status {
-                Status::Unknown | Status::Left(_) => true,
+                Status::Unknown | Status::Left { .. } => true,
                 Status::UsedUp { retry_at } => unix_ms >= retry_at,
             }
     }
@@ -187,7 +259,7 @@ impl Tracker {
         let sends = if self.sends_today.0 == day { self.sends_today.1 + 1 } else { 1 };
         self.sends_today = (day, sends);
         if sends == MAX_SENDS_PER_DAY {
-            println!("[DAILY] {}: sent {sends} times today; no more until the reset.", self.daily.command());
+            out!("[DAILY] {}: sent {sends} times today; no more until the reset.", self.daily.command());
         }
     }
 
@@ -195,7 +267,7 @@ impl Tracker {
         let retry_at = retry_time(unix_ms, recheck);
         self.status = Status::UsedUp { retry_at };
         let now_ms = crate::unix_ms_now().max(unix_ms);
-        println!(
+        out!(
             "[DAILY] {}: used up for today; next try in {}.",
             self.daily.command(),
             wait_text(retry_at.saturating_sub(now_ms))
@@ -209,7 +281,7 @@ impl Tracker {
         let mut replies: Vec<(u64, &str)> = messages
             .iter()
             .filter(|m| m.id > pending.after_id)
-            .filter_map(|m| Some((m.id, owo_content(&m.summary)?)))
+            .filter_map(|m| Some((m.id, owo_content(m)?)))
             .filter(|(_, content)| {
                 let content = content.to_lowercase();
                 self.daily.markers().iter().any(|marker| content.contains(marker))
@@ -218,27 +290,32 @@ impl Tracker {
         replies.sort_unstable_by_key(|(id, _)| *id);
         let mut unreadable = None;
         for (id, content) in replies {
-            let Some(left) = self.daily.remaining(content) else {
+            let Some((left, stated)) = self.daily.remaining(content) else {
                 unreadable.get_or_insert(content);
                 continue;
             };
             self.pending = None;
             self.silent = 0;
-            self.next = Some(now + SPACING);
+            self.next = Some(pending.sent + self.daily.cooldown());
             if other_echo_near(messages, command, id) {
-                println!("[DAILY] {command}: someone else sent it at the same time; checking again later.");
+                out!("[DAILY] {command}: someone else sent it at the same time; checking again later.");
                 return;
             }
+            self.limit = stated.or(match self.limit {
+                Some(limit) => Some(limit.max(left + 1)),
+                None => (left > 0).then_some(left + 1),
+            });
             // A pause can hold the reply back past the reset; the day it belongs to is the day it was posted.
             let posted = snowflake_unix_ms(id).clamp(unix_ms.saturating_sub(12 * HOUR_MS), unix_ms);
-            let stuck = matches!(self.status, Status::Left(before) if left >= before);
+            let day = owo_day(posted);
+            let stuck = matches!(self.status, Status::Left { left: before, day: then } if then == day && left >= before);
             if left > 0 && !stuck {
-                self.status = Status::Left(left);
-                println!("[DAILY] {command}: {left} left today.");
+                self.status = Status::Left { left, day };
+                out!("[DAILY] {command}: {left} left today.");
                 return;
             }
             if stuck {
-                println!("[DAILY] {command}: OwO still says {left} left after another use, so it stops to be safe.");
+                out!("[DAILY] {command}: OwO still says {left} left after another use, so it stops to be safe.");
             }
             self.stop_until_reset(posted, pending.recheck);
             return;
@@ -247,20 +324,20 @@ impl Tracker {
             return;
         }
         self.pending = None;
-        self.next = Some(now + SPACING);
+        self.next = Some((pending.sent + self.daily.cooldown()).max(now));
         if let Some(content) = unreadable {
             let excerpt: String = content.chars().take(160).collect();
-            println!("[DAILY] {command}: could not read OwO's reply: \"{excerpt}\"");
+            out!("[DAILY] {command}: could not read OwO's reply: \"{excerpt}\"");
             self.stop_until_reset(unix_ms, pending.recheck);
             return;
         }
         self.silent += 1;
         if self.silent < SILENT_TRIES {
-            println!("[DAILY] {command}: no reply from OwO; trying again later.");
+            out!("[DAILY] {command}: no reply from OwO; trying again later.");
             return;
         }
         self.silent = 0;
-        println!("[DAILY] {command}: no reply from OwO after {SILENT_TRIES} tries.");
+        out!("[DAILY] {command}: no reply from OwO after {SILENT_TRIES} tries.");
         self.stop_until_reset(unix_ms, false);
     }
 }
@@ -276,24 +353,59 @@ fn other_echo_near(messages: &[ChatMessage], command: &str, reply_id: u64) -> bo
 }
 
 /// Daily limits are read from OwO's replies, so a limit that grows from one day to the next is followed.
+/// What is known is saved to `store`, so a restart on the same OwO day neither forgets nor re-sends it.
 pub struct Dailies {
     trackers: Vec<Tracker>,
+    store: Option<PathBuf>,
+    /// Saved entries, including those of commands turned off this run, so turning one off keeps its count.
+    saved: serde_json::Map<String, Value>,
+    warned: bool,
 }
 
 impl Dailies {
-    pub fn new(enabled: impl IntoIterator<Item = Daily>) -> Self {
+    pub fn new(enabled: impl IntoIterator<Item = Daily>, store: Option<PathBuf>, unix_ms: u64) -> Self {
+        let file: Value = store
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let saved = file["commands"].as_object().cloned().unwrap_or_default();
         let trackers = enabled
             .into_iter()
-            .map(|daily| Tracker {
-                daily,
-                status: Status::Unknown,
-                pending: None,
-                next: None,
-                silent: 0,
-                sends_today: (0, 0),
+            .map(|daily| {
+                let mut tracker = Tracker::new(daily);
+                if let Some(entry) = saved.get(daily.command()) {
+                    tracker.restore(entry, unix_ms);
+                }
+                tracker
             })
             .collect();
-        Self { trackers }
+        Self { trackers, store, saved, warned: false }
+    }
+
+    /// Writes the file when anything in it changed, through a temporary file so a crash never leaves half of one.
+    pub fn save(&mut self) {
+        let Some(path) = &self.store else { return };
+        let mut commands = self.saved.clone();
+        for tracker in &self.trackers {
+            commands.insert(tracker.daily.command().to_owned(), tracker.snapshot());
+        }
+        if commands == self.saved {
+            return;
+        }
+        let temporary = path.with_extension("json.tmp");
+        let body = json!({ "commands": commands }).to_string();
+        let written = fs::write(&temporary, body).and_then(|()| fs::rename(&temporary, path));
+        match written {
+            Ok(()) => self.saved = commands,
+            Err(e) => {
+                let _ = fs::remove_file(&temporary);
+                if !self.warned {
+                    self.warned = true;
+                    out!("[!] Could not save {}: {e}", path.display());
+                }
+            }
+        }
     }
 
     pub fn next_due(&self, now: Instant, unix_ms: u64) -> Option<Daily> {
@@ -310,6 +422,19 @@ impl Dailies {
         for tracker in &mut self.trackers {
             tracker.observe(messages, now, unix_ms);
         }
+    }
+
+    pub fn view(&self) -> Vec<crate::hub::DailyView> {
+        self.trackers
+            .iter()
+            .map(|t| crate::hub::DailyView {
+                command: t.daily.command(),
+                left: if let Status::Left { left, .. } = t.status { Some(left) } else { None },
+                limit: t.limit,
+                used_up: matches!(t.status, Status::UsedUp { .. }),
+                retry_at: if let Status::UsedUp { retry_at } = t.status { Some(retry_at) } else { None },
+            })
+            .collect()
     }
 
     /// After a pause the reply may never come, which says nothing about the limit.
@@ -332,13 +457,20 @@ mod tests {
     const ARMY: &str = "OwO Verified App , :rusty: | Scavenging through the messages, you found the rusty ol' Rusty Army Emblem! :blank: | Today's remaining Broken Army Emblem : 14 , 12:00 PM";
     const PUP: &str = "OwO Verified App , :puppy: | You picked up one puppy! :blank: | You can adopt 3 puppies today. :blank: | You adopted 128 puppies in total! , 12:00 PM";
     const PUP_AGAIN: &str = "OwO Verified App , :puppy: | You picked up one puppy!! :blank: | You adopted 2/3 puppies today! :blank: | You adopted 129 puppies in total! , 12:01 PM";
+    const CLAIM: &str = "OwO Verified App , 💰 | Player, Here is your daily :cowoncy: 5000 Cowoncy! :blank: | You're on a 1013 daily streak! 📦 | You received a lootbox! ⏱ | Your next daily is in: 22H 52M 34S 📪 | Player, you have 3 unread mail! , 3:07 PM";
+    const CLAIM_WAIT: &str = "OwO Verified App , ⏱ | Nu! Player! You need to wait 2H 44M 11S , 12:00 PM";
     const HUNT: &str = "OwO Verified App , 🌱 | Player spent 5 :cowoncy: and caught a :bug: ! , 12:00 PM";
     /// 2026-01-01 12:00 UTC, in Pacific standard time.
     const NOON: u64 = 1_767_268_800_000;
     const JULY_NOON: u64 = 1_782_907_200_000;
 
     fn msg_at(unix_ms: u64, summary: &str) -> ChatMessage {
-        ChatMessage { id: snowflake_at(unix_ms), summary: summary.to_owned() }
+        ChatMessage {
+            id: snowflake_at(unix_ms),
+            summary: summary.to_owned(),
+            detail: String::new(),
+            from_owo: crate::gems::reply_text(summary).is_some(),
+        }
     }
 
     fn days(unix_ms: u64) -> i64 {
@@ -353,7 +485,7 @@ mod tests {
 
     impl Run {
         fn new(daily: Daily, unix: u64) -> Self {
-            Self { dailies: Dailies::new([daily]), start: Instant::now(), unix }
+            Self { dailies: Dailies::new([daily], None, unix), start: Instant::now(), unix }
         }
         fn at(&self, later_ms: u64) -> (Instant, u64) {
             (self.start + Duration::from_millis(later_ms), self.unix + later_ms)
@@ -373,19 +505,61 @@ mod tests {
         fn status(&self) -> Status {
             self.dailies.trackers[0].status
         }
+        fn left(&self) -> Option<u32> {
+            self.dailies.view()[0].left
+        }
     }
 
     #[test]
     fn remaining_uses_are_read_from_each_reply() {
-        let left = |daily: Daily, summary| daily.remaining(owo_content(summary).unwrap());
-        assert_eq!(left(Daily::Run, RUN), Some(0));
-        assert_eq!(left(Daily::Run, RUN_TIRED), Some(0));
-        assert_eq!(left(Daily::Pup, PUP), Some(2));
-        assert_eq!(left(Daily::Pup, PUP_AGAIN), Some(1));
-        assert_eq!(left(Daily::Piku, PIKU), Some(1));
-        assert_eq!(left(Daily::Piku, PIKU_AGAIN), Some(0));
-        assert_eq!(left(Daily::Army, ARMY), Some(14));
+        let left = |daily: Daily, summary| daily.remaining(crate::gems::reply_text(summary).unwrap());
+        assert_eq!(left(Daily::Run, RUN), Some((0, Some(1))));
+        assert_eq!(left(Daily::Run, RUN_TIRED), Some((0, None)));
+        assert_eq!(left(Daily::Pup, PUP), Some((2, Some(3))));
+        assert_eq!(left(Daily::Pup, PUP_AGAIN), Some((1, Some(3))));
+        assert_eq!(left(Daily::Piku, PIKU), Some((1, Some(2))));
+        assert_eq!(left(Daily::Piku, PIKU_AGAIN), Some((0, Some(2))));
+        assert_eq!(left(Daily::Army, ARMY), Some((14, None)));
+        assert_eq!(left(Daily::Claim, CLAIM), Some((0, Some(1))));
+        assert_eq!(left(Daily::Claim, CLAIM_WAIT), Some((0, Some(1))));
         assert_eq!(Daily::Pup.remaining("You adopted 3 puppies today! | You can adopt 4 puppies tomorrow!"), None);
+    }
+
+    #[test]
+    fn owodaily_is_sent_once_then_waits_for_the_reset() {
+        let mut run = Run::new(Daily::Claim, NOON);
+        assert!(run.due(0));
+        run.send(Daily::Claim, 0);
+        run.reply(1000, &[msg_at(NOON + 500, CLAIM_WAIT)]);
+        assert!(matches!(run.status(), Status::UsedUp { .. }));
+        assert!(!run.due(HOUR_MS));
+        assert!(run.due(next_reset(NOON) - NOON));
+    }
+
+    #[test]
+    fn counts_survive_a_restart_on_the_same_owo_day_only() {
+        let path = std::env::temp_dir().join(format!("zippy-dailies-test-{}.json", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let start = Instant::now();
+        let mut dailies = Dailies::new([Daily::Army, Daily::Pup], Some(path.clone()), NOON);
+        dailies.sent(Daily::Army, snowflake_at(NOON), start, NOON);
+        dailies.observe(&[msg_at(NOON + 500, ARMY)], start, NOON + 1000);
+        dailies.sent(Daily::Pup, snowflake_at(NOON + 2000), start, NOON + 2000);
+        dailies.observe(&[msg_at(NOON + 2500, &PUP_AGAIN.replace("2/3", "3/3"))], start, NOON + 3000);
+        dailies.save();
+
+        let view = |d: &Dailies| d.view().into_iter().map(|v| (v.left, v.limit, v.used_up)).collect::<Vec<_>>();
+        let later = Dailies::new([Daily::Army, Daily::Pup], Some(path.clone()), NOON + HOUR_MS);
+        assert_eq!(view(&later), [(Some(14), Some(15), false), (None, Some(3), true)]);
+
+        let mut only_army = Dailies::new([Daily::Army], Some(path.clone()), NOON + HOUR_MS);
+        only_army.sent(Daily::Army, snowflake_at(NOON + HOUR_MS), start, NOON + HOUR_MS);
+        only_army.observe(&[msg_at(NOON + HOUR_MS + 500, &ARMY.replace(": 14", ": 13"))], start, NOON + HOUR_MS + 1000);
+        only_army.save();
+        let tomorrow = next_reset(NOON) + HOUR_MS;
+        let next_day = Dailies::new([Daily::Army, Daily::Pup], Some(path.clone()), tomorrow);
+        assert_eq!(view(&next_day), [(None, Some(15), false), (None, Some(3), false)], "pup, off for a run, keeps its limit");
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -411,15 +585,15 @@ mod tests {
         run.reply(1000, &[msg_at(NOON - 1000, PUP), msg_at(NOON + 500, HUNT)]);
         assert_eq!(run.status(), Status::Unknown, "older and unrelated replies are ignored");
         run.reply(2000, &[msg_at(NOON + 1500, PUP)]);
-        assert_eq!(run.status(), Status::Left(2));
-        assert!(!run.due(3000), "spaced out");
-        assert!(run.due(2000 + 20_000));
+        assert_eq!(run.left(), Some(2));
+        assert!(!run.due(61_000), "owopup has a one-minute cooldown");
+        assert!(run.due(62_000));
 
-        run.send(Daily::Pup, 30_000);
-        run.reply(31_000, &[msg_at(NOON + 30_500, PUP_AGAIN)]);
-        assert_eq!(run.status(), Status::Left(1));
-        run.send(Daily::Pup, 60_000);
-        run.reply(61_000, &[msg_at(NOON + 60_500, &PUP_AGAIN.replace("2/3", "3/3"))]);
+        run.send(Daily::Pup, 70_000);
+        run.reply(71_000, &[msg_at(NOON + 70_500, PUP_AGAIN)]);
+        assert_eq!(run.left(), Some(1));
+        run.send(Daily::Pup, 140_000);
+        run.reply(141_000, &[msg_at(NOON + 140_500, &PUP_AGAIN.replace("2/3", "3/3"))]);
         assert!(!run.due(HOUR_MS));
         assert!(run.due(next_reset(NOON) - NOON));
     }
@@ -429,6 +603,7 @@ mod tests {
         let mut run = Run::new(Daily::Army, NOON);
         run.send(Daily::Army, 0);
         run.reply(1000, &[msg_at(NOON + 500, ARMY)]);
+        assert!(!run.due(11_000) && run.due(12_000), "owoarmy has a ten-second cooldown");
         run.send(Daily::Army, 30_000);
         run.reply(31_000, &[msg_at(NOON + 30_500, ARMY)]);
         assert!(matches!(run.status(), Status::UsedUp { .. }));
@@ -457,7 +632,7 @@ mod tests {
         run.reply(1000, &[msg_at(NOON + 500, stray)]);
         assert_eq!(run.status(), Status::Unknown, "keeps waiting before the timeout");
         run.reply(2000, &[msg_at(NOON + 500, stray), msg_at(NOON + 1500, PIKU)]);
-        assert_eq!(run.status(), Status::Left(1));
+        assert_eq!(run.left(), Some(1));
 
         run.send(Daily::Piku, 30_000);
         run.reply(30_000 + 20_000, &[msg_at(NOON + 30_500, stray)]);
@@ -487,7 +662,20 @@ mod tests {
         ];
         run.reply(1000, &messages);
         assert_eq!(run.status(), Status::Unknown);
-        assert!(run.due(1000 + 20_000));
+        assert!(run.due(62_000));
+    }
+
+    #[test]
+    fn a_new_days_count_is_not_mistaken_for_a_stuck_one() {
+        let late = next_reset(NOON) - RESET_MARGIN_MS - 2 * MINUTE_MS;
+        let mut run = Run::new(Daily::Pup, late);
+        run.send(Daily::Pup, 0);
+        run.reply(1000, &[msg_at(late + 500, PUP_AGAIN)]);
+        assert_eq!(run.left(), Some(1));
+        let after_midnight = 3 * MINUTE_MS;
+        run.send(Daily::Pup, after_midnight);
+        run.reply(after_midnight + 1000, &[msg_at(late + after_midnight + 500, PUP)]);
+        assert_eq!(run.left(), Some(2), "a fresh day's 2 left is not \"no change\" from yesterday's 1");
     }
 
     #[test]

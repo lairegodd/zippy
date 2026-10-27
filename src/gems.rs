@@ -4,12 +4,17 @@ use std::ops::RangeInclusive;
 pub const GEM_TYPES: [(u8, RangeInclusive<u16>); 3] = [(1, 51..=57), (3, 65..=71), (4, 72..=78)];
 pub const HUNT_COMMAND: &str = "owoh";
 const USE_PREFIX: &str = "owo use ";
-const OWO_AUTHOR: &str = "OwO Verified App";
+const OWO_PREFIX: &str = "OwO Verified App , ";
 const MAX_INVENTORY_REQUESTS: u32 = 3;
+pub const INVENTORY_COMMAND: &str = "owo inv";
 
 pub struct ChatMessage {
     pub id: u64,
     pub summary: String,
+    /// Text of the message's inner elements, which holds embed fields the summary cuts off.
+    pub detail: String,
+    /// Written by the real OwO bot: its header shows the name "OwO" with Discord's "Verified App" tag.
+    pub from_owo: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,7 +26,7 @@ pub enum Action {
 impl Action {
     pub fn command(&self) -> String {
         match self {
-            Action::Inventory => "owo inv".to_owned(),
+            Action::Inventory => INVENTORY_COMMAND.to_owned(),
             Action::Use(ids) => {
                 let ids: Vec<String> = ids.iter().map(u16::to_string).collect();
                 format!("{USE_PREFIX}{}", ids.join(" "))
@@ -67,6 +72,15 @@ impl GemKeeper {
         }
     }
 
+    /// `owo inv` was sent and its reply has not been read yet.
+    pub fn awaiting_inventory(&self) -> bool {
+        self.stock.is_none() && self.inventory_after.is_some()
+    }
+
+    pub fn player(&self) -> Option<&str> {
+        self.player.as_deref()
+    }
+
     pub fn sent(&mut self, command: &str, earliest_id: u64) {
         if self.player.is_none() {
             self.player_probe = Some((command.to_owned(), earliest_id));
@@ -95,7 +109,7 @@ impl GemKeeper {
             && let Some(after) = self.inventory_after
             && let Some(gems) = find_inventory(messages, &player, after)
         {
-            println!("[GEM] Inventory read: {}", describe_stock(&gems));
+            out!("[GEM] Inventory read: {}", describe_stock(&gems));
             self.stock = Some(gems);
             self.inventory_after = None;
         }
@@ -103,7 +117,7 @@ impl GemKeeper {
         let hunt = messages
             .iter()
             .filter(|m| m.id > self.last_hunt)
-            .filter_map(|m| Some((m.id, hunt_active_gems(owo_content(&m.summary)?, &player)?)))
+            .filter_map(|m| Some((m.id, hunt_active_gems(owo_content(m)?, &player)?)))
             .max_by_key(|(id, _)| *id);
         let fresh_hunt = hunt.is_some();
         if let Some((id, active)) = hunt {
@@ -126,7 +140,7 @@ impl GemKeeper {
         if authors.any(|other| other != author) {
             return;
         }
-        println!("[GEM] Player name: {author}");
+        out!("[GEM] Player name: {author}");
         self.player = Some(author.to_owned());
         self.player_probe = None;
     }
@@ -142,7 +156,7 @@ impl GemKeeper {
                 // A gem used before this hunt that is still inactive was not in the inventory.
                 Some(&(id, UseState::HuntSentAfter)) => {
                     self.pending.remove(kind);
-                    println!("[GEM] owo use {id} did not activate gem{kind}; treating ID {id} as used up.");
+                    out!("[GEM] owo use {id} did not activate gem{kind}; treating ID {id} as used up.");
                     if let Some(stock) = &mut self.stock {
                         stock.insert(id, 0);
                     }
@@ -151,7 +165,7 @@ impl GemKeeper {
                 None => {}
             }
             if self.missing.insert(*kind) {
-                println!("[GEM] gem{kind} ran out.");
+                out!("[GEM] gem{kind} ran out.");
             }
         }
     }
@@ -168,7 +182,7 @@ impl GemKeeper {
                 actions.push(Action::Inventory);
             } else if fresh_hunt && self.inventory_requests == MAX_INVENTORY_REQUESTS {
                 self.inventory_requests += 1;
-                println!("[GEM] Could not read the owo inv reply after {MAX_INVENTORY_REQUESTS} tries; gem feature off.");
+                out!("[GEM] Could not read the owo inv reply after {MAX_INVENTORY_REQUESTS} tries; gem feature off.");
             }
             return actions;
         };
@@ -189,7 +203,7 @@ impl GemKeeper {
                 }
                 None => {
                     if self.reported_empty.insert(*kind) {
-                        println!("[GEM] No gem{kind} at or below ID {} left in the inventory.", self.preferred[slot]);
+                        out!("[GEM] No gem{kind} at or below ID {} left in the inventory.", self.preferred[slot]);
                     }
                 }
             }
@@ -215,8 +229,17 @@ pub fn split_summary(summary: &str) -> Option<(&str, &str)> {
     Some((author.trim(), content.trim()))
 }
 
-pub fn owo_content(summary: &str) -> Option<&str> {
-    summary.strip_prefix(OWO_AUTHOR)?.strip_prefix(" , ")
+/// Text of a reply from the real OwO bot; anyone else's message gives `None`, whatever its display name.
+pub fn owo_content(message: &ChatMessage) -> Option<&str> {
+    if !message.from_owo {
+        return None;
+    }
+    reply_text(&message.summary)
+}
+
+/// Drops the "OwO Verified App , " author prefix that Discord puts in front of a message summary.
+pub fn reply_text(summary: &str) -> Option<&str> {
+    summary.strip_prefix(OWO_PREFIX)
 }
 
 fn gem_type(token: &str) -> Option<u8> {
@@ -262,10 +285,10 @@ fn find_inventory(messages: &[ChatMessage], player: &str, after: u64) -> Option<
     ordered.sort_by_key(|m| m.id);
     let start = ordered
         .iter()
-        .rposition(|m| owo_content(&m.summary).is_some_and(|c| c.contains(&header)))?;
+        .rposition(|m| owo_content(m).is_some_and(|c| c.contains(&header)))?;
     let mut stock = BTreeMap::new();
     for (i, message) in ordered[start..].iter().enumerate() {
-        let Some(content) = owo_content(&message.summary) else { break };
+        let Some(content) = owo_content(message) else { break };
         if i > 0 && content.contains("'s Inventory") {
             break;
         }
@@ -278,13 +301,27 @@ fn find_inventory(messages: &[ChatMessage], player: &str, after: u64) -> Option<
     Some(stock)
 }
 
+/// Gem types still active after this hunt. OwO prints each gem's uses left after the hunt
+/// (`:mgem1: [38/75]`), so a gem at `[0/75]` is already used up and the next hunt would run without it.
 fn hunt_active_gems(content: &str, player: &str) -> Option<BTreeSet<u8>> {
     let (_, after) = content.split_once(&format!("| {player}"))?;
     if !after.starts_with(" spent ") && !after.starts_with(", hunt is empowered") {
         return None;
     }
     let header = after.split('|').next().unwrap_or(after);
-    Some(header.split_whitespace().filter_map(gem_type).collect())
+    let tokens: Vec<&str> = header.split_whitespace().collect();
+    let active = tokens.iter().enumerate().filter_map(|(i, token)| {
+        let kind = gem_type(token)?;
+        let left = tokens.get(i + 1).and_then(|next| uses_left(next));
+        (left != Some(0)).then_some(kind)
+    });
+    Some(active.collect())
+}
+
+/// `[38/75]` (Discord may keep the backticks) gives 38.
+fn uses_left(token: &str) -> Option<u32> {
+    let inner = token.trim_matches('`').strip_prefix('[')?.strip_suffix(']')?;
+    inner.split_once('/')?.0.parse().ok()
 }
 
 #[cfg(test)]
@@ -298,7 +335,7 @@ mod tests {
     const INVENTORY_PAGE2: &str = "OwO Verified App , 117 :sythe: ⁰⁵¹ 118 :crune: ⁰⁰³ 2-- 🖼 ⁰⁰⁷ , 12:02 PM";
 
     fn msg(id: u64, summary: &str) -> ChatMessage {
-        ChatMessage { id, summary: summary.to_owned() }
+        ChatMessage { id, summary: summary.to_owned(), detail: String::new(), from_owo: summary.starts_with(OWO_PREFIX) }
     }
 
     const HIGHEST: [u16; 3] = [57, 71, 78];
@@ -328,17 +365,19 @@ mod tests {
 
     #[test]
     fn hunt_reply_lists_active_gem_types() {
-        let active = |s| hunt_active_gems(owo_content(s).unwrap(), "Player");
+        let active = |s| hunt_active_gems(reply_text(s).unwrap(), "Player");
         assert_eq!(active(HUNT_ALL_GEMS), Some(BTreeSet::from([1, 3, 4])));
         assert_eq!(active(HUNT_GEM1_GONE), Some(BTreeSet::from([3, 4])));
         assert_eq!(active(HUNT_NO_GEMS), Some(BTreeSet::new()));
-        assert_eq!(hunt_active_gems(owo_content(HUNT_NO_GEMS).unwrap(), "Other"), None);
-        assert_eq!(hunt_active_gems(owo_content(HUNT_NO_GEMS).unwrap(), "Play"), None);
+        let last_use = "OwO Verified App , 🌱 | Player, hunt is empowered by :mgem1: [0/75] :mgem3: [55/525] :mgem4: [357/525] ! :blank: | You found: :bee: , 9:41 PM";
+        assert_eq!(active(last_use), Some(BTreeSet::from([3, 4])), "a gem at [0/75] is used up after this hunt");
+        assert_eq!(hunt_active_gems(reply_text(HUNT_NO_GEMS).unwrap(), "Other"), None);
+        assert_eq!(hunt_active_gems(reply_text(HUNT_NO_GEMS).unwrap(), "Play"), None);
     }
 
     #[test]
     fn inventory_reads_gem_ids_and_superscript_counts_only() {
-        let gems = inventory_gems(owo_content(INVENTORY).unwrap());
+        let gems = inventory_gems(reply_text(INVENTORY).unwrap());
         assert_eq!(gems.len(), 15);
         assert!(gems.contains(&(51, 341)));
         assert!(gems.contains(&(70, 1)));

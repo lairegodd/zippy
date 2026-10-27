@@ -1,0 +1,671 @@
+/* Nunito: rounded letterforms carry the warm, playful mood from DESIGN.md (bundled, SIL OFL). */
+@font-face {
+  font-family: "Nunito";
+  src: url("/nunito.woff2") format("woff2");
+  font-weight: 400 800;
+  font-display: swap;
+}
+
+/* Discord's own greys and blurple, so the dashboard feels like the place the game happens. */
+:root {
+  color-scheme: light;
+  --bg: #f2f3f5;
+  --surface: #ffffff;
+  --sunken: #ebedef;
+  --text: #060607;
+  --muted: #4e5058;
+  --border: #d4d7dc;
+  --accent: #4752c4;
+  --on-accent: #ffffff;
+  --run: #1a7f45;
+  --wait: #8a5a00;
+  --stop: #c22a2e;
+  --focus: #4752c4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #313338;
+    --surface: #2b2d31;
+    --sunken: #1e1f22;
+    --text: #f2f3f5;
+    --muted: #b5bac1;
+    --border: #3f4147;
+    --accent: #4752c4;
+    --on-accent: #ffffff;
+    --run: #4fd283;
+    --wait: #f0b232;
+    --stop: #ff8a8c;
+    --focus: #949cf7;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #313338;
+  --surface: #2b2d31;
+  --sunken: #1e1f22;
+  --text: #f2f3f5;
+  --muted: #b5bac1;
+  --border: #3f4147;
+  --accent: #4752c4;
+  --on-accent: #ffffff;
+  --run: #4fd283;
+  --wait: #f0b232;
+  --stop: #ff8a8c;
+  --focus: #949cf7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 "Nunito", "Segoe UI", sans-serif;
+}
+
+h1,
+h2 {
+  margin: 0;
+  line-height: 1.2;
+}
+
+h2 {
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+code {
+  font-family: Consolas, monospace;
+}
+
+button {
+  font: inherit;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--sunken);
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* The one accent: the action that starts or resumes sending. */
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+button.quiet {
+  background: transparent;
+  border-color: transparent;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px clamp(16px, 4vw, 40px);
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.logo {
+  font-size: 0.8rem;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.wordmark {
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.version {
+  color: var(--muted);
+}
+
+.top-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* Tighter on phones, so the theme toggle and Settings stay on the brand's row. */
+@media (max-width: 420px) {
+  .top { gap: 8px; }
+  .brand { gap: 6px; }
+  .top-actions button:not(.icon) { padding-inline: 10px; }
+}
+
+/* In the header the tooltip drops below the toggle instead of covering the wordmark. */
+.top .tip {
+  right: auto;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translate(-50%, -4px);
+}
+
+.top button.icon:hover .tip,
+.top button.icon:focus-visible .tip {
+  transform: translate(-50%, 0);
+}
+
+.banner {
+  margin: 0 clamp(16px, 4vw, 40px) 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--stop);
+  color: var(--stop);
+  background: var(--surface);
+  font-weight: 700;
+}
+
+/* Status leads; the log runs alongside on wide screens and drops to the end on phones. */
+.layout {
+  display: grid;
+  gap: 16px;
+  padding: 0 clamp(16px, 4vw, 40px) 40px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-areas:
+    "status status"
+    "reminders log"
+    "statistics log"
+    "dailies log";
+  align-items: start;
+}
+
+.status { grid-area: status; }
+.reminders { grid-area: reminders; }
+.statistics { grid-area: statistics; }
+.dailies { grid-area: dailies; }
+.log { grid-area: log; }
+
+/* The hidden switch reads as plain text in the sentence; only keyboard focus gives it away. */
+button.egg {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: text;
+}
+
+button.egg:hover:not(:disabled) {
+  border-color: transparent;
+}
+
+/* A dashed rule, like the [LOGO] placeholder: tooling for whoever builds Zippy, not part of the product. */
+.developer {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+}
+
+/* Unlocking it unfolds the section from the dashed rule, so the reward is seen where it appears. */
+.developer.unlocked {
+  animation: unfold 450ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes unfold {
+  from { opacity: 0; clip-path: inset(0 0 100% 0); }
+  to { opacity: 1; clip-path: inset(0 0 0 0); }
+}
+
+.dev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 860px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "status" "reminders" "statistics" "dailies" "log";
+  }
+}
+
+.status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "face text controls" "keys keys keys";
+  align-items: center;
+  gap: 8px 24px;
+  padding: 24px 28px;
+  background: var(--surface);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 860px) {
+  .status {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "face text" "controls controls" "keys keys";
+    padding: 20px;
+  }
+}
+
+/* The kaomoji is the identity motif: OwO's mouth, with eyes that follow the state. */
+.face {
+  grid-area: face;
+  margin: 0;
+  font-size: clamp(2rem, 6vw, 3.25rem);
+  font-weight: 800;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+[data-phase="running"] .face,
+[data-phase="running"] #phase {
+  color: var(--run);
+}
+
+[data-phase="paused"] .face,
+[data-phase="paused"] #phase {
+  color: var(--wait);
+}
+
+[data-phase="banned"] .face,
+[data-phase="banned"] #phase {
+  color: var(--stop);
+}
+
+.status-text {
+  grid-area: text;
+  min-width: 0;
+}
+
+#phase {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+  font-weight: 800;
+}
+
+.reason {
+  margin: 6px 0 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.reason:empty,
+.target:empty {
+  display: none;
+}
+
+.target {
+  margin: 4px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.controls {
+  grid-area: controls;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.keys {
+  grid-area: keys;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panel > h2,
+.panel-head {
+  margin-bottom: 8px;
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rows > li,
+.rows > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.rows > :first-child {
+  border-top: 0;
+}
+
+.rows dt {
+  font-weight: 700;
+}
+
+.rows dd {
+  margin: 0;
+  text-align: right;
+}
+
+.value {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.when {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.ready {
+  color: var(--run);
+  font-weight: 800;
+}
+
+.unknown {
+  color: var(--muted);
+}
+
+.note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Icon-only button; its name shows as a tooltip on hover and keyboard focus. */
+button.icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  padding: 0;
+}
+
+/* One turn on click confirms the read was queued. */
+button.icon.spun svg {
+  animation: spin 600ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Beside the button, so it stays inside the panel and never covers the one above. */
+.tip {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(4px, -50%);
+  transition: opacity 120ms, transform 120ms;
+}
+
+button.icon:hover .tip,
+button.icon:focus-visible .tip {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+
+/* Sun and moon are one drawing: the rays fold away while a cut slides over the disc to leave a crescent. */
+.theme-toggle svg {
+  overflow: visible;
+}
+
+.theme-toggle .core,
+.theme-toggle .cut {
+  transition: r 500ms cubic-bezier(0.16, 1, 0.3, 1), cx 500ms cubic-bezier(0.16, 1, 0.3, 1), cy 500ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.theme-toggle .rays {
+  transform-origin: 12px 12px;
+  transition: transform 500ms cubic-bezier(0.16, 1, 0.3, 1), opacity 250ms;
+}
+
+.theme-toggle[aria-pressed="true"] .core {
+  r: 8.5px;
+}
+
+.theme-toggle[aria-pressed="true"] .cut {
+  cx: 17px;
+  cy: 7px;
+  r: 7px;
+}
+
+.theme-toggle[aria-pressed="true"] .rays {
+  transform: rotate(90deg) scale(0.4);
+  opacity: 0;
+}
+
+/* The new theme spreads from the toggle in a soft-edged circle, the way light spills from a switch. */
+@property --reveal {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+.revealing::view-transition-new(root) {
+  mask-image: radial-gradient(circle at var(--reveal-x) var(--reveal-y), #000 calc(var(--reveal) - 56px), transparent var(--reveal));
+  animation: theme-reveal 650ms cubic-bezier(0.33, 0, 0.2, 1) forwards;
+}
+
+@keyframes theme-reveal {
+  to { --reveal: var(--reveal-r); }
+}
+
+.daily .meter {
+  flex: 1 1 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+/* Scaled, not resized, so each use slides the bar down smoothly. */
+.daily .fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--run);
+  transform-origin: left;
+  transition: transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.daily .count {
+  transition: color 700ms;
+}
+
+/* The count flashes for a moment after a use, so the change is noticed. */
+.daily.used .count {
+  color: var(--wait);
+  transition: none;
+}
+
+/* Console text, so a fixed-width face keeps its columns lined up. */
+#log {
+  margin: 0;
+  padding: 10px 12px;
+  list-style: none;
+  max-height: min(70vh, 640px);
+  overflow: auto;
+  background: var(--sunken);
+  border-radius: 8px;
+  font: 0.85rem/1.45 Consolas, "Cascadia Mono", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#log:empty::before {
+  content: "Nothing yet. Press Start and Zippy's messages show up here.";
+  color: var(--muted);
+  font-family: "Nunito", "Segoe UI", sans-serif;
+}
+
+#log time {
+  color: var(--muted);
+  margin-right: 8px;
+}
+
+dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}
+
+.fields {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.field label {
+  font-weight: 700;
+}
+
+.field small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.field select {
+  font: inherit;
+  min-height: 44px;
+  min-width: 120px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--sunken);
+  color: var(--text);
+}
+
+.field input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  margin: 10px;
+  accent-color: var(--accent);
+}
+
+.save-state {
+  min-height: 1.5em;
+  margin: 8px 0 0;
+  font-weight: 700;
+}
+
+.save-state.error {
+  color: var(--stop);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.locked {
+  max-width: 560px;
+  margin: 12vh auto;
+  padding: 0 20px;
+}
+
+.locked h1 {
+  margin: 8px 0 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+  button.icon.spun svg {
+    animation: none;
+  }
+  .developer.unlocked {
+    animation-name: fade;
+  }
+  /* No spreading circle: the theme still changes visibly, as a short crossfade. */
+  .revealing::view-transition-new(root) {
+    mask-image: none;
+    animation: fade 180ms ease-out;
+  }
+}
+
+@keyframes fade {
+  from { opacity: 0; }
+}

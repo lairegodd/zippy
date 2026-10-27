@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zippy</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">[LOGO]</span>
+    <span class="wordmark">Zippy</span>
+    <span class="version" id="version"></span>
+  </div>
+  <div class="top-actions">
+    <button type="button" class="quiet icon theme-toggle" id="theme" aria-pressed="false" aria-label="Dark theme">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+        <mask id="theme-cut">
+          <rect width="24" height="24" fill="#fff"/>
+          <circle class="cut" cx="30" cy="-6" r="8" fill="#000"/>
+        </mask>
+        <circle class="core" cx="12" cy="12" r="5" fill="currentColor" mask="url(#theme-cut)"/>
+        <g class="rays" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M12 1.5v2M12 20.5v2M1.5 12h2M20.5 12h2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M4.6 19.4L6 18M18 6l1.4-1.4"/>
+        </g>
+      </svg>
+      <span class="tip" id="theme-tip" aria-hidden="true">Switch to dark</span>
+    </button>
+    <button type="button" class="quiet" id="open-settings">Settings</button>
+  </div>
+</header>
+
+<section class="locked" id="locked" hidden>
+  <p class="face" aria-hidden="true">(・ω・)?</p>
+  <h1>Open the link from the Zippy window</h1>
+  <p>This dashboard only works through the link Zippy prints when it starts, so other websites and programs can't control it.
+  Copy the line starting with <code>[OK] Dashboard:</code> from the Zippy window into your browser. The link changes every time Zippy starts.</p>
+</section>
+
+<p class="banner" id="offline" role="alert" hidden>Can't reach Zippy. Is the Zippy window still open?</p>
+
+<main class="layout">
+  <section class="status" aria-labelledby="phase">
+    <p class="face" id="face" aria-hidden="true">(・ω・)</p>
+    <div class="status-text" aria-live="polite">
+      <h1 id="phase">Connecting to Zippy…</h1>
+      <p class="reason" id="reason"></p>
+      <p class="target" id="target"></p>
+    </div>
+    <div class="controls">
+      <button type="button" class="primary" id="start" disabled>Start</button>
+      <button type="button" id="pause" disabled>Pause</button>
+      <button type="button" id="stop" disabled>Stop</button>
+    </div>
+    <p class="keys">Pro tip: use F8 to pause or resume, and use F10 to quit 😏</p>
+  </section>
+
+  <section class="panel reminders" aria-labelledby="reminders-title">
+    <h2 id="reminders-title">Reminders</h2>
+    <ul id="reminders" class="rows"></ul>
+  </section>
+
+  <section class="panel statistics" aria-labelledby="statistics-title">
+    <div class="panel-head">
+      <h2 id="statistics-title">Statistics</h2>
+      <button type="button" class="icon" id="refresh" aria-label="Read stats again" disabled>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+          <path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M20.5 3.5v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="tip" aria-hidden="true">Read stats again</span>
+      </button>
+    </div>
+    <dl id="statistics" class="rows"></dl>
+  </section>
+
+  <section class="panel dailies" aria-labelledby="dailies-title">
+    <h2 id="dailies-title">Daily commands</h2>
+    <ul id="dailies" class="rows"></ul>
+  </section>
+
+  <section class="panel log" aria-labelledby="log-title">
+    <h2 id="log-title">Activity</h2>
+    <ol id="log" tabindex="0" aria-label="Activity log, newest at the bottom"></ol>
+  </section>
+</main>
+
+<dialog id="settings" aria-labelledby="settings-title">
+  <form method="dialog" class="settings">
+    <div class="panel-head">
+      <h2 id="settings-title">Settings</h2>
+      <button type="submit" class="quiet" id="close-settings">Close</button>
+    </div>
+    <p class="note">Saved as soon as you change something. Changes apply the next time you press <button type="button" class="egg" id="egg" aria-label="Start (tap it five times to unlock developer mode)">Start</button>.</p>
+    <p class="save-state" id="save-state" role="status"></p>
+    <div id="fields" class="fields"></div>
+
+    <section class="developer" id="developer" aria-labelledby="developer-title" hidden>
+      <h2 id="developer-title">Developer mode</h2>
+      <p class="note">For testing captcha handling. Nothing here posts in Discord, and it stays on until Zippy closes.</p>
+      <div class="dev-actions">
+        <button type="button" id="simulate-captcha" disabled>Simulate captcha</button>
+        <button type="button" id="dump-chat" disabled>Log chat messages</button>
+      </div>
+      <p class="note">Simulate captcha pauses Zippy and rings the captcha alarm, as a real one would; Resume carries on. Log chat messages writes the newest 15 messages to Activity exactly as Zippy reads them. F9 also simulates a captcha. Both need Zippy started.</p>
+    </section>
+  </form>
+</dialog>
+</body>
+</html>
