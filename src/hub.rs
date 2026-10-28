@@ -1,21 +1,84 @@
 use std::collections::VecDeque;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
+use crate::daily::Daily;
+use crate::huntbot;
 use crate::stats::Stats;
 
 const LOG_LINES: usize = 300;
 const MAX_CONTROLS: usize = 8;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
     Start,
     Pause,
     Stop,
-    Refresh,
+    Refresh(Reads),
+    /// Start huntbot now instead of waiting for its countdown or a retry.
+    Huntbot,
+    /// The letters from OwO's huntbot password image, typed by the player.
+    HuntbotPassword(String),
+    /// Send this command ahead of the routine ones, from the dashboard's right-click menu.
+    Send(Command),
     /// Developer mode only: behave exactly as if OwO had posted a captcha.
     SimulateCaptcha,
     /// Developer mode only: log the newest chat messages as Zippy reads them.
     DumpChat,
+}
+
+/// Which dashboard panel a refresh reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reads {
+    Statistics,
+    Reminders,
+}
+
+/// The commands the dashboard's right-click menu can ask for. The browser only names one of these, so no text
+/// from it is ever typed into Discord.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Huntbot,
+    Daily(Daily),
+    Cash,
+    Cookie,
+    BossTickets,
+    Vote,
+    Pray,
+    Battle,
+}
+
+impl Command {
+    const ALL: [Command; 12] = [
+        Command::Huntbot,
+        Command::Daily(Daily::Claim),
+        Command::Daily(Daily::Run),
+        Command::Daily(Daily::Pup),
+        Command::Daily(Daily::Piku),
+        Command::Daily(Daily::Army),
+        Command::Cash,
+        Command::Cookie,
+        Command::BossTickets,
+        Command::Vote,
+        Command::Pray,
+        Command::Battle,
+    ];
+
+    pub fn text(self) -> &'static str {
+        match self {
+            Command::Huntbot => "owohb",
+            Command::Daily(daily) => daily.command(),
+            Command::Cash => "owocash",
+            Command::Cookie => "owo cookie",
+            Command::BossTickets => "owoboss t",
+            Command::Vote => "owovote",
+            Command::Pray => "owopray",
+            Command::Battle => "owob",
+        }
+    }
+
+    pub fn from_text(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.text() == text)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +109,7 @@ pub struct Hub {
     pub target: Option<Target>,
     pub stats: Stats,
     pub dailies: Vec<DailyView>,
+    pub huntbot: huntbot::View,
     /// Developer mode (`--debug`): captcha simulation and raw chat dumps.
     pub debug: bool,
     log: VecDeque<(u64, String)>,
@@ -60,6 +124,7 @@ static HUB: LazyLock<Mutex<Hub>> = LazyLock::new(|| {
         stats: Stats::default(),
         dailies: Vec::new(),
         debug: false,
+        huntbot: huntbot::View::off(),
         log: VecDeque::new(),
         log_seq: 0,
         controls: VecDeque::new(),
@@ -118,12 +183,22 @@ impl Hub {
     }
 }
 
-/// Repeated clicks collapse, so a flood of requests cannot grow the queue.
-pub fn control(control: Control) {
+/// Repeated clicks collapse, so a flood of requests cannot grow the queue. A command already waiting to be
+/// asked for is not queued twice, wherever it sits. Returns false when the queue is full and nothing was added.
+pub fn control(control: Control) -> bool {
     let mut hub = hub();
-    if hub.controls.back() != Some(&control) && hub.controls.len() < MAX_CONTROLS {
-        hub.controls.push_back(control);
+    let duplicate = match &control {
+        Control::Send(_) => hub.controls.contains(&control),
+        _ => hub.controls.back() == Some(&control),
+    };
+    if duplicate {
+        return true;
     }
+    if hub.controls.len() >= MAX_CONTROLS {
+        return false;
+    }
+    hub.controls.push_back(control);
+    true
 }
 
 pub fn set_phase(phase: Phase) {

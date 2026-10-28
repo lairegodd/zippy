@@ -4,7 +4,7 @@ Zippy is a Windows console program that sends OwO bot commands (`owoh`, `owob`) 
 
 > **Read this first!** This bot is for educational purposes. Automating a user account breaks Discord's Terms of Service (ToS) and OwO's rules against macros. Your Discord account or your OwO profile can be banned. You use Zippy at your own risk.
 
-## What's this?
+## How's This Work, I Wonder?
 
 - Sends these commands, each on its own timer, with at least 2.5 seconds between any two:
 
@@ -16,15 +16,16 @@ Zippy is a Windows console program that sends OwO bot commands (`owoh`, `owob`) 
   | `oworun`, `owopup`, `owopiku` | every minute, until today's limit is used up |
   | `owoarmy` | every 10 seconds, until today's limit is used up |
   | `owodaily` | once a day, after OwO's daily reset |
-  | `owocash`, `owo cookie`, `owoboss t`, `owovote`, `owohb` | with `stats = on`, every 30 to 60 minutes (a random wait each time); any time from the dashboard's refresh button |
+  | `owocash`, `owo cookie`, `owoboss t`, `owovote`, `owohb` | with `stats = on`, every 30 to 60 minutes (a random wait each time); any time from the dashboard's refresh buttons |
+  | `owohb (nh)` (your full duration) | with `huntbot = on`, each time huntbot is back; you type OwO's password |
 
   When several are due at once, Zippy sends them in priority order:
 
-  1. `owoh`, `owob`, and the gem upkeep they need (`owo inv`, then `owo use`). After `owo inv`, nothing else is sent until its reply is read and the `owo use` has gone out (at most 20 seconds), so another command never lands in between.
-  2. `owo` and `owopray`.
-  3. Stats and the daily commands.
+  1. Gem upkeep (`owo inv`, then `owo use`) and huntbot's commands; then any command you asked for from the dashboard's right-click menu; then `owoh` and `owob`. After `owo inv`, nothing but `owoh` and `owob` is sent until its reply is read and the `owo use` has gone out (at most 20 seconds), so another command never lands in between. While OwO waits for the huntbot password, nothing else is sent.
+  2. `owo` and `owopray`, and the reads you ask for with a refresh button.
+  3. The daily commands and the automatic reads.
 
-  Within a level the command that has waited longest goes first, and anything left waiting over two minutes moves to the front, so none of them is starved.
+  Within a level the command that has waited longest goes first, and anything left waiting over two minutes moves to the front, so none of them is starved. A command from the right-click menu is queued once however often you ask, so it can delay a hunt by a few seconds but never hold hunting back.
 - Reads each daily command's limit from OwO's reply instead of assuming it, and prints what is left (`[DAILY] owoarmy: 13 left today.`). Once a command is used up it is not sent again until OwO's day resets (midnight US Pacific time, following daylight saving). Limits that grow from one day to the next are followed automatically.
 - Stops a daily command until the reset, to be safe, when OwO's reply cannot be read, OwO does not answer twice in a row, or the count does not go down after a use. It never sends one more than 40 times a day. If someone else sends the same command at the same moment, Zippy does not trust the reply and asks again later.
 - Saves the daily counts and limits in `zippy-dailies.json` next to the exe, so stopping or quitting does not lose them: a restart on the same OwO day carries on from the saved counts, and a command already used up is not sent again before the reset.
@@ -40,6 +41,23 @@ Zippy is a Windows console program that sends OwO bot commands (`owoh`, `owob`) 
 - Stops completely when it sees an OwO ban message, until you check it and press F8.
 - Alerts with a Windows notification that keeps ringing, a flashing taskbar button, and three beeps.
 - Keeps hunt gems active: when a gem runs out, Zippy reads your inventory with `owo inv` and sends `owo use` with the gem IDs you chose in the settings. OwO shows each gem's uses left after the hunt (`[38/75]`), so a gem at `[0/75]` counts as used up at once and Zippy replaces it right after that hunt, not one hunt later.
+- Starts huntbot again each time it comes back (see [Huntbot](#huntbot)).
+
+### Huntbot
+
+With `huntbot = on`, Zippy sends huntbot out again for its full duration whenever it comes back:
+
+1. When huntbot's countdown runs out (or Zippy does not know it yet), Zippy sends `owohb`. That collects a finished hunt, and a second `owohb` shows the profile. Zippy reads the Duration trait from it (`Duration - 7.6H`, or from the level: level 0 is 0.5h and every level adds 0.1h, up to 24h at level 235) and what a full hunt costs (`Current Max Autohunt: ... for 5,776 cowoncy`).
+2. When the profile names a cost, Zippy sends `owocash` first. If you have less than a full hunt costs, it does not ask OwO for a password you would solve for nothing: it waits 30 minutes and checks again.
+3. Zippy sends `owohb 7.6h` (your duration). OwO answers with a password shown as an image.
+4. **You type the password.** Zippy rings (Windows notification, flashing taskbar button, three beeps) and the dashboard's Huntbot panel shows a box for it. In the Zippy window you can also type it and press Enter. Zippy then sends `owohb 7.6h <password>`.
+5. OwO answers `BEEP BOOP ... YOU SPENT ... I WILL BE BACK IN 1H 36M`, and Zippy waits for that countdown.
+
+While OwO waits for the password, Zippy sends nothing else, so the password image stays at the bottom of the chat. OwO resets the password after 5 minutes; if none was typed by then, Zippy carries on farming and asks again 30 minutes later. If OwO says the password is wrong, type it again. If OwO says you don't have enough cowoncy, Zippy sends a notification and tries again in 30 minutes.
+
+Zippy does not read the password image itself. The password is OwO's check that a person is there, so you always type it yourself.
+
+The **Send owohb now** button (or typing `hb` in the Zippy window) starts a new try at once, for example after you get more cowoncy.
 
 To type, Zippy brings the Discord window to the front (restoring it if it is minimized), types the command, and then gives focus back to the window you were using. It never posts anything but the command:
 
@@ -49,12 +67,7 @@ To type, Zippy brings the Discord window to the front (restoring it if it is min
 
 If Discord runs as administrator, Windows blocks Zippy's keystrokes, so run Zippy as administrator too.
 
-## Requirements
-
-- Windows 10 or 11.
-- The Discord desktop app, or Discord open in one of the browsers listed above, logged in.
-
-## Usage
+## How to use?
 
 1. Open the Discord channel where you want to farm, in the desktop app or your browser.
 2. Run `zippy.exe`. On the first run it creates `settings.ini` next to the exe. It asks how to run:
@@ -80,9 +93,11 @@ The keys work from any window, in both the dashboard and console modes.
 The dashboard opens in your default browser at `http://127.0.0.1:<port>`. Keep the Zippy window open while you use it; closing that window stops both Zippy and the dashboard.
 
 - **Start, Pause, Stop.** Start looks for your Discord channel and begins sending. Pause holds sending (Start then reads Resume). Stop ends the run; Start begins a new one with the current settings.
-- **Reminders.** When huntbot is back, `owo daily` is ready, you can give a cookie again, or you can vote, Zippy shows it on the dashboard and, with `reminders = on`, sends a Windows notification. It only tells you when a countdown runs out, not about something that was already ready.
-- **Statistics.** Cowoncy, cookies, luck points (from `owopray`), animal essence (from `owohb`), battle streak (from `owob`, with this run's wins, losses and draws), daily streak and unread mail (from `owodaily`), and boss tickets, each with the time it was read. Unread mail is counted from the line OwO adds to `owodaily` while mail is unread; a daily without that line sets it to none. The refresh button (hover it for its name, **Read stats again**) sends `owocash`, `owo cookie`, `owoboss t`, `owovote` and `owohb` once each. With `stats = on`, Zippy also does this on its own every 30 to 60 minutes. `owohb` collects your huntbot if it has finished. Level and XP are not shown: OwO sends them as an image Zippy can't read.
+- **Reminders.** When huntbot is back, `owo daily` is ready, you can give a cookie again, or you can vote, Zippy shows it on the dashboard and, with `reminders = on`, sends a Windows notification. It only tells you when a countdown runs out, not about something that was already ready. The refresh button (hover it for its name, **Check reminders again**) sends only this panel's reads: `owohb`, `owovote` and `owo cookie`, once each. `owohb` collects your huntbot if it has finished. `owo daily` is not read by it, since sending `owodaily` would claim the daily; its time shows after `owodaily` is sent.
+- **Huntbot.** What automatic huntbot is doing, your full duration and what a full hunt costs. When OwO asks for the password, a box for it shows here and the browser tab's title changes to "Password needed". **Send owohb now** starts a new try.
+- **Statistics.** Cowoncy, cookies, luck points (from `owopray`), animal essence (from `owohb`), battle streak (from `owob`, with this run's wins, losses and draws), daily streak and unread mail (from `owodaily`), and boss tickets, each with the time it was read. Unread mail is counted from the line OwO adds to `owodaily` while mail is unread; a daily without that line sets it to none. The refresh button (**Read stats again a.k.a refresh**) sends only this panel's reads: `owocash`, `owo cookie` and `owoboss t`, once each. `owo cookie` answers for both panels: when both ask, it is sent once, and a reply that carries numbers for the other panel updates them too, so nothing OwO says is thrown away. With `stats = on`, Zippy reads both panels on its own every 30 to 60 minutes. Reads queued when you press Stop are dropped. Level and XP are not shown: OwO sends them as an image Zippy can't read.
 - **Daily commands.** How many uses of each daily command are left today, out of today's limit. The bar shrinks with each use.
+- **Right-click menu.** Right-click a row in Huntbot, Reminders, Statistics or Daily commands (or focus it with Tab and press Shift+F10, or the menu key) and choose **Send … next** to send that row's command ahead of the routine ones. The rows send `owohb` (Huntbot, Animal essence), `owodaily` (owo daily, Daily streak), `owo cookie`, `owovote`, `owocash`, `owopray` (Luck points), `owob` (Battle streak), `owoboss t`, and each daily command. The command still follows its own rules: `owopray` and `owob` wait for their cooldown, a daily command that is used up, turned off, or still waiting for OwO's reply is not sent, and `owohb` is refused while OwO waits for the huntbot password. Activity says when it goes out, or why it can't. Only these commands can be asked for; the dashboard never sends text of its own to Discord.
 - **Activity.** The same messages the console shows.
 - **Settings.** Every setting from `settings.ini`, saved as soon as you change it. Changes apply at the next Start.
 - Light and dark themes, switched with the sun and moon button at the top; the new theme spreads out from the button. The dashboard follows Windows until you pick one.
@@ -101,13 +116,21 @@ Every value Zippy reads is also appended to `zippy-stats.jsonl` next to the exe 
 | `--test-notification` | Sends a test alert so you can confirm Windows notifications are not blocked. |
 | `--update` | Installs the newest release without asking, then exits. |
 
+## Settings
+
+`settings.ini` sits next to `zippy.exe`. Change it from the dashboard's Settings, from option 3 in the startup menu, or in a text editor. Changes apply at the next Start.
+
+ Note: A `settings.ini` from an older Zippy has none of the newer keys, so `owo`, `owopray`, the daily commands, `stats` and `huntbot` stay off after updating, because each of them sends commands. Turn them on in Settings. A fresh `settings.ini` has them on.
+
+If you run out of the gem you picked, Zippy uses the next lower ID you own (for example 54, then 53, 52, 51). It never uses a higher ID than the one you set. Gems are only managed in `hunt` and `both` mode.
+
 ### Updates
 
 At startup Zippy asks GitHub whether a newer release exists. If one does, it asks before downloading. Press Enter (or type `y`) to install it: Zippy downloads the new `zippy.exe`, checks its SHA-256 checksum against the one GitHub lists for the release, replaces itself, and restarts. Your `settings.ini` stays as it is.
 
 If the download fails or the checksum does not match, nothing is replaced. Zippy needs write access to its own folder to update, so keep it somewhere like `Documents` rather than `Program Files`. To turn the check off, set `update_check = off`.
 
-### About Windows SmartScreen.....
+### [IMPORTANT] Windows SmartScreen Blocks the program to run
 
 The first time you open a `zippy.exe` downloaded with your browser, Windows may show "Windows protected your PC". Zippy is not code-signed, and SmartScreen warns about any new file that few people have downloaded yet. Check that the file came from this repository's Releases page (its SHA256 is listed in the release notes), then click **More info** and **Run anyway**. Windows remembers that choice for this file.
 
@@ -117,57 +140,7 @@ Updates that Zippy installs itself do not show the prompt again. Windows only ch
 
 A code-signing certificate would not remove the prompt right away either. Since 2024, signed files also start without reputation and only stop warning after many clean downloads. The one way to skip it entirely is the Microsoft Store.
 
-## Settings
-
-`settings.ini` sits next to `zippy.exe`. Change it from the dashboard's Settings, from option 3 in the startup menu, or in a text editor. Changes apply at the next Start.
-
-```ini
-# What to send every cycle: hunt, battle, or both.
-mode = both
-
-# Gem to use when one runs out, by inventory ID.
-gem1 = 57
-gem3 = 71
-gem4 = 78
-
-# Plain "owo" every 11 seconds, and "owopray" every 5 minutes: on or off.
-owo = on
-pray = on
-
-# Daily commands: owodaily once a day, the others until OwO says today's limit is used up: on or off.
-daily = on
-run = on
-pup = on
-piku = on
-army = on
-
-# Read cash, cookies, boss tickets, vote and huntbot on its own every 30 to 60 minutes: on or off.
-# The dashboard's refresh button reads them any time. This sends owocash, owo cookie, owoboss t,
-# owovote and owohb (owohb collects a finished huntbot).
-stats = on
-
-# Windows notifications when huntbot, daily, cookie or vote is ready: on or off.
-reminders = on
-
-# Check GitHub for a newer Zippy at startup: on or off.
-update_check = on
-```
-
-| Key | Allowed values | Default |
-| --- | --- | --- |
-| `mode` | `hunt`, `battle`, `both` | `both` |
-| `gem1` | 51 to 57 | 57 |
-| `gem3` | 65 to 71 | 71 |
-| `gem4` | 72 to 78 | 78 |
-| `owo`, `pray` | `on`, `off` | `on` |
-| `daily`, `run`, `pup`, `piku`, `army` | `on`, `off` | `on` |
-| `stats` | `on`, `off` | `on` |
-| `reminders` | `on`, `off` | `on` |
-| `update_check` | `on`, `off` | `on` |
-
-A `settings.ini` from an older Zippy has none of the newer keys, so `owo`, `owopray`, the daily commands, and `stats` stay off after updating, because each of them sends commands. Turn them on in Settings. A fresh `settings.ini` has them on.
-
-If you run out of the gem you picked, Zippy uses the next lower ID you own (for example 54, then 53, 52, 51). It never uses a higher ID than the one you set. Gems are only managed in `hunt` and `both` mode.
+> This is a safe program, Your data, such as Discord Account, Your Hardware Specifications and such, would NEVER get sent anywhere. you can check the code for yourself. This is open-source, after all.
 
 ## Building from source
 
@@ -191,14 +164,12 @@ Besides the commands it types into Discord, Zippy only contacts GitHub (`api.git
 
 ## Future updates
 
-Planned, not built yet:
-
 1. Reminders for `owo huntbot`, `owo daily`, captchas, and more, sent through a webhook (to Discord or a phone).
 2. Inventory on the dashboard, once there is a reliable source for OwO's item icons.
 3. Automatic captcha solving.
 4. Android support.
 5. A helper for daily quests.
-6. An account switcher for quests that need two players, such as "Receive an action from a friend".
+6. An account switcher for clearing quests that need two players.
 
 ### FAQ
 -  "When the chat cannot be read, what should i do?"
@@ -212,8 +183,8 @@ Zippy reads Discord through Windows accessibility (UI Automation). Chromium-base
 ## Credits
 
 - [Paiiss/owofarm](https://github.com/Paiiss/owofarm) for give me an inspiration to make this project.
-- Some features from [Kiy0w0/owomizu](https://github.com/Kiy0w0/owomizu) may be added to Zippy later.
-- The localhos dashboard uses the [Nunito](https://github.com/googlefonts/nunito) font, licensed under the SIL Open Font License 1.1 (`web/OFL-Nunito.txt`).
+- Some features from [Kiy0w0/owomizu](https://github.com/Kiy0w0/owomizu) may be added to Zippy in the future.
+- The localhost dashboard uses the [Nunito](https://github.com/googlefonts/nunito) font, licensed under the SIL Open Font License 1.1 (`web/OFL-Nunito.txt`).
 
 ## License
 

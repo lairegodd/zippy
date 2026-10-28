@@ -54,18 +54,51 @@
       <button type="button" id="pause" disabled>Pause</button>
       <button type="button" id="stop" disabled>Stop</button>
     </div>
-    <p class="keys">Pro tip: use F8 to pause or resume, and use F10 to quit 😏</p>
+    <div class="keys">
+      <p>Pro tip: use F8 to pause or resume, and use F10 to quit 😏</p>
+      <p id="menu-hint">Right-click a row in Huntbot, Reminders, Statistics or Daily commands to send its command next. With the keyboard, focus the row and press Shift+F10.</p>
+      <p class="queue-note" id="queue-note" role="status"></p>
+    </div>
+  </section>
+
+  <section class="panel huntbot" id="huntbot" aria-labelledby="huntbot-title">
+    <div class="panel-head">
+      <h2 id="huntbot-title">Huntbot</h2>
+      <button type="button" id="huntbot-now" disabled>Send owohb now</button>
+    </div>
+    <p class="huntbot-status" id="huntbot-status" aria-live="polite"></p>
+    <form class="password" id="huntbot-form" hidden>
+      <label for="huntbot-password">Letters from OwO's password image
+        <small id="huntbot-hint"></small>
+      </label>
+      <div class="password-row">
+        <input id="huntbot-password" name="password" type="text" autocomplete="off" autocapitalize="off"
+          spellcheck="false" maxlength="16" pattern="[A-Za-z0-9]+" required>
+        <button type="submit" class="primary" id="huntbot-send">Send password</button>
+      </div>
+      <p class="save-state" id="huntbot-feedback" role="status"></p>
+    </form>
+    <dl id="huntbot-rows" class="rows"></dl>
   </section>
 
   <section class="panel reminders" aria-labelledby="reminders-title">
-    <h2 id="reminders-title">Reminders</h2>
+    <div class="panel-head">
+      <h2 id="reminders-title">Reminders</h2>
+      <button type="button" class="icon refresh" id="refresh-reminders" aria-label="Check reminders again" disabled>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+          <path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M20.5 3.5v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="tip" aria-hidden="true">Check reminders again</span>
+      </button>
+    </div>
     <ul id="reminders" class="rows"></ul>
   </section>
 
   <section class="panel statistics" aria-labelledby="statistics-title">
     <div class="panel-head">
       <h2 id="statistics-title">Statistics</h2>
-      <button type="button" class="icon" id="refresh" aria-label="Read stats again" disabled>
+      <button type="button" class="icon refresh" id="refresh" aria-label="Read stats again" disabled>
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
           <path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
           <path d="M20.5 3.5v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -108,5 +141,9 @@
     </section>
   </form>
 </dialog>
+
+<div class="command-menu" id="command-menu" role="menu" aria-label="Command" hidden>
+  <button type="button" role="menuitem" id="command-send"></button>
+</div>
 </body>
 </html>

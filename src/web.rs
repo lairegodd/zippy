@@ -13,7 +13,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::hub::{self, Control, Phase};
+use crate::hub::{self, Control, Phase, Reads};
 use crate::settings::Settings;
 use crate::stats::Stat;
 
@@ -92,6 +92,7 @@ impl Response {
             413 => "Content Too Large",
             415 => "Unsupported Media Type",
             421 => "Misdirected Request",
+            429 => "Too Many Requests",
             431 => "Request Header Fields Too Large",
             _ => "Error",
         };
@@ -350,12 +351,24 @@ fn control(request: &Request) -> Response {
         Some("start") => Control::Start,
         Some("pause") => Control::Pause,
         Some("stop") => Control::Stop,
-        Some("refresh") => Control::Refresh,
+        Some("refresh") => Control::Refresh(Reads::Statistics),
+        Some("refresh_reminders") => Control::Refresh(Reads::Reminders),
+        Some("huntbot") => Control::Huntbot,
+        Some("huntbot_password") => match body["password"].as_str().and_then(crate::huntbot::clean_password) {
+            Some(password) => Control::HuntbotPassword(password),
+            None => return Response::error(400, "type only the letters from OwO's image"),
+        },
+        Some("send") => match body["command"].as_str().and_then(hub::Command::from_text) {
+            Some(command) => Control::Send(command),
+            None => return Response::error(400, "Zippy can't send that command from the dashboard"),
+        },
         Some("simulate_captcha") if debug => Control::SimulateCaptcha,
         Some("dump_chat") if debug => Control::DumpChat,
         _ => return Response::error(400, "unknown action"),
     };
-    hub::control(action);
+    if !hub::control(action) {
+        return Response::error(429, "Zippy has too many requests waiting; try again in a moment");
+    }
     Response::json(200, &json!({ "queued": body["action"] }))
 }
 
@@ -385,6 +398,7 @@ fn state() -> Value {
         .collect();
     let skip = hub.log().count().saturating_sub(LOG_LINES_SENT);
     let log: Vec<Value> = hub.log().skip(skip).map(|(t, text)| json!({ "t": t, "text": text })).collect();
+    let huntbot = &hub.huntbot;
     json!({
         "version": crate::update::current_version(),
         "now": crate::unix_ms_now(),
@@ -402,12 +416,22 @@ fn state() -> Value {
             "unread_mail": reading(Stat::UnreadMail),
             "boss_tickets": reading(Stat::BossTickets),
             "boss_tickets_max": reading(Stat::BossTicketsMax),
+            "huntbot_hours": reading(Stat::HuntbotHours),
+            "huntbot_cost": reading(Stat::HuntbotCost),
             "prays_sent": hub.stats.prays_sent,
             "wins": hub.stats.wins,
             "losses": hub.stats.losses,
             "draws": hub.stats.draws,
         },
         "reminders": reminders,
+        "huntbot": {
+            "state": huntbot.state,
+            "until": huntbot.until,
+            "wrong_password": huntbot.wrong_password,
+            "have": huntbot.have,
+            "need": huntbot.need,
+            "command": huntbot.command,
+        },
         "dailies": dailies,
         "log_seq": hub.log_seq(),
         "log": log,
@@ -488,6 +512,21 @@ mod tests {
         assert_eq!(call(&server, "POST", "/api/control", &good, r#"{"action":"simulate_captcha"}"#), 400, "developer mode is off");
         assert_eq!(call(&server, "POST", "/api/control", &good, "not json"), 400);
         assert_eq!(call(&server, "GET", "/api/control", &signed(&[]), ""), 405);
+    }
+
+    #[test]
+    fn the_menu_can_only_ask_for_known_commands() {
+        let server = server();
+        let good = signed(&[("origin", "http://127.0.0.1:5000"), ("content-type", "application/json")]);
+        assert_eq!(call(&server, "POST", "/api/control", &good, r#"{"action":"send","command":"owoboss t"}"#), 200);
+        for body in [
+            r#"{"action":"send","command":"owo give @someone 1000"}"#,
+            r#"{"action":"send","command":"owocash "}"#,
+            r#"{"action":"send","command":"owoh"}"#,
+            r#"{"action":"send"}"#,
+        ] {
+            assert_eq!(call(&server, "POST", "/api/control", &good, body), 400, "{body}");
+        }
     }
 
     #[test]

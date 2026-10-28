@@ -19,23 +19,24 @@ const PHASES = {
   banned: "Ban message seen",
 };
 
+/* [label, text before the first reading, command the row's right-click menu sends] */
 const REMINDERS = {
-  huntbot: ["Huntbot", "Read stats to check"],
-  daily: ["owo daily", "Shows after owodaily is sent"],
-  cookie: ["Cookie to give", "Read stats to check"],
-  vote: ["Vote for OwO", "Read stats to check"],
+  huntbot: ["Huntbot", "Press refresh to check", "owohb"],
+  daily: ["owo daily", "Shows after owodaily is sent", "owodaily"],
+  cookie: ["Cookie to give", "Press refresh to check", "owo cookie"],
+  vote: ["Vote for OwO", "Press refresh to check", "owovote"],
 };
 
-/* [key, label, text before the first reading] */
+/* [key, label, text before the first reading, command the row's right-click menu sends] */
 const STATISTICS = [
-  ["cash", "Cowoncy", "Not read yet"],
-  ["cookies", "Cookies", "Not read yet"],
-  ["luck", "Luck points", "Not read yet"],
-  ["essence", "Animal essence", "Not read yet"],
-  ["streak", "Battle streak", "Not read yet"],
-  ["daily_streak", "Daily streak", "Shows after owodaily"],
-  ["unread_mail", "Unread mail", "Shows after owodaily"],
-  ["boss_tickets", "Boss tickets", "Not read yet"],
+  ["cash", "Cowoncy", "Not read yet", "owocash"],
+  ["cookies", "Cookies", "Not read yet", "owo cookie"],
+  ["luck", "Luck points", "Not read yet", "owopray"],
+  ["essence", "Animal essence", "Not read yet", "owohb"],
+  ["streak", "Battle streak", "Not read yet", "owob"],
+  ["daily_streak", "Daily streak", "Shows after owodaily", "owodaily"],
+  ["unread_mail", "Unread mail", "Shows after owodaily", null],
+  ["boss_tickets", "Boss tickets", "Not read yet", "owoboss t"],
 ];
 
 const FIELDS = {
@@ -50,8 +51,9 @@ const FIELDS = {
   pup: ["owopup", "Until today's limit is used up"],
   piku: ["owopiku", "Until today's limit is used up"],
   army: ["owoarmy", "Until today's limit is used up"],
-  stats: ["Read stats on their own", "Every 30 to 60 minutes; the refresh button reads them any time"],
+  stats: ["Read stats on their own", "Every 30 to 60 minutes; the refresh buttons read them any time"],
   reminders: ["Windows reminders", "Huntbot, daily, cookie and vote"],
+  huntbot: ["Automatic huntbot", "Sends owohb with your full duration when huntbot is back; you type OwO's password"],
   update_check: ["Check for updates", "At startup, from GitHub"],
 };
 
@@ -105,18 +107,37 @@ function renderStatus(state) {
   $("start").disabled = !(phase === "idle" || stoppedLike);
   $("pause").disabled = phase !== "running";
   $("stop").disabled = phase === "idle";
-  $("refresh").disabled = !(phase === "running" || stoppedLike);
+  for (const id of ["refresh", "refresh-reminders"]) $(id).disabled = !(phase === "running" || stoppedLike);
   $("developer").hidden = !state.debug;
   $("simulate-captcha").disabled = phase !== "running";
   $("dump-chat").disabled = !(phase === "running" || stoppedLike);
 }
 
+/* The page polls every second; swapping identical rows would repaint the panel each time for nothing.
+   A focused row keeps the focus when its panel is redrawn, so keyboard users are not thrown out of it. */
+function replaceIfChanged(list, rows) {
+  const before = [...list.children].map((n) => n.outerHTML).join("");
+  const after = rows.map((n) => n.outerHTML).join("");
+  if (before === after) return;
+  const focused = [...list.children].indexOf(document.activeElement);
+  list.replaceChildren(...rows);
+  if (focused >= 0 && rows[focused]) rows[focused].focus();
+}
+
+/* A row whose command can be sent from the right-click menu; it takes keyboard focus for Shift+F10. */
+function sendable(row, command) {
+  if (!command) return row;
+  row.dataset.command = command;
+  row.tabIndex = 0;
+  row.setAttribute("aria-describedby", "menu-hint");
+  return row;
+}
+
 function renderReminders(state) {
-  const list = $("reminders");
-  list.replaceChildren();
+  const rows = [];
   for (const reminder of state.reminders) {
-    const [label, unknown] = REMINDERS[reminder.key];
-    const row = el("li");
+    const [label, unknown, command] = REMINDERS[reminder.key];
+    const row = sendable(el("li"), command);
     row.append(el("span", "", label));
     const at = reminder.ready_at;
     if (at === null) {
@@ -128,16 +149,117 @@ function renderReminders(state) {
       value.append(el("span", "when", `at ${clock(at)}`));
       row.append(value);
     }
-    list.append(row);
+    rows.push(row);
+  }
+  replaceIfChanged($("reminders"), rows);
+}
+
+/* States where a fresh owohb makes sense; while OwO is mid-reply or waiting for the password it would only confuse it. */
+const HUNTBOT_RESTARTABLE = ["waiting", "no_cowoncy", "expired", "no_reply", "no_duration"];
+
+function huntbotStatus(state) {
+  const huntbot = state.huntbot;
+  const now = state.now;
+  const back = state.reminders.find((r) => r.key === "huntbot")?.ready_at ?? null;
+  const retry = huntbot.until ? clock(huntbot.until) : "later";
+  switch (huntbot.state) {
+    case "off":
+      return "Automatic huntbot is off. Turn it on in Settings to have Zippy send owohb when huntbot is back.";
+    case "idle":
+      return "After you press Start, Zippy sends owohb with your full duration each time huntbot is back.";
+    case "waiting":
+      return back !== null && back > now
+        ? `Hunting. Zippy starts it again when it's back, at ${clock(back)}.`
+        : "Huntbot looks free. Zippy checks it with owohb next.";
+    case "working":
+      return "Waiting for OwO's reply to the huntbot command…";
+    case "password":
+      return `OwO posted a password image for ${huntbot.command}. ${span(huntbot.until - now)} left before it resets.`;
+    case "no_cowoncy":
+      return huntbot.have !== null && huntbot.need !== null
+        ? `Not enough cowoncy: a full hunt costs ${number(huntbot.need)} and you have ${number(huntbot.have)}. Zippy checks again at ${retry}.`
+        : `OwO says you don't have enough cowoncy. Zippy checks again at ${retry}.`;
+    case "expired":
+      return `The password reset before it was typed. Zippy asks OwO for a new one at ${retry}.`;
+    case "no_reply":
+      return `OwO didn't answer the huntbot commands. Zippy tries again at ${retry}.`;
+    case "no_duration":
+      return `Zippy couldn't read your duration from owohb. It tries again at ${retry}.`;
+    default:
+      return "";
+  }
+}
+
+let huntbotState = null;
+
+function renderHuntbot(state) {
+  const huntbot = state.huntbot;
+  const panel = $("huntbot");
+  const asking = huntbot.state === "password";
+  const status = huntbotStatus(state);
+  if ($("huntbot-status").textContent !== status) $("huntbot-status").textContent = status;
+  panel.dataset.state = huntbot.state;
+  const active = ["running", "paused"].includes(state.phase);
+  $("huntbot-now").disabled = !(active && HUNTBOT_RESTARTABLE.includes(huntbot.state));
+  $("huntbot-send").disabled = !active;
+
+  const form = $("huntbot-form");
+  form.hidden = !asking;
+  const hint = huntbot.wrong_password
+    ? "OwO said that password was wrong. Check the image in Discord and type it again."
+    : "Find OwO's \"Here is your password!\" message in Discord and type the letters in its image.";
+  if ($("huntbot-hint").textContent !== hint) $("huntbot-hint").textContent = hint;
+  $("huntbot-hint").classList.toggle("error", huntbot.wrong_password);
+  /* Focus moves to the box once, when OwO starts asking, so the password can be typed straight away. */
+  if (asking && huntbotState !== "password") {
+    $("huntbot-feedback").textContent = "";
+    $("huntbot-password").focus();
+  }
+  huntbotState = huntbot.state;
+  document.title = asking ? "Password needed · Zippy" : "Zippy";
+
+  const rows = [];
+  const stats = state.stats;
+  for (const [key, label, format] of [
+    ["huntbot_hours", "Full duration", (v) => `${(v / 10).toFixed(1)} h`],
+    ["huntbot_cost", "A full hunt costs", (v) => `${number(v)} cowoncy`],
+  ]) {
+    const row = sendable(el("div"), "owohb");
+    row.append(el("dt", "", label));
+    const cell = el("dd");
+    const reading = stats[key];
+    if (reading) {
+      cell.append(el("span", "value", format(reading.value)), el("span", "when", ago(reading.at, state.now)));
+    } else {
+      cell.append(el("span", "unknown", "Read from owohb"));
+    }
+    row.append(cell);
+    rows.push(row);
+  }
+  replaceIfChanged($("huntbot-rows"), rows);
+}
+
+async function sendPassword(event) {
+  event.preventDefault();
+  const input = $("huntbot-password");
+  const feedback = $("huntbot-feedback");
+  feedback.classList.remove("error");
+  try {
+    await post("/api/control", { action: "huntbot_password", password: input.value });
+    feedback.textContent = "Sent to Zippy. It types the command into Discord next.";
+    input.value = "";
+  } catch (e) {
+    feedback.textContent = `Not sent: ${e.message}`;
+    feedback.classList.add("error");
+    input.focus();
   }
 }
 
 function renderStatistics(state) {
-  const list = $("statistics");
-  list.replaceChildren();
+  const rows = [];
   const stats = state.stats;
-  for (const [key, label, unread] of STATISTICS) {
-    const row = el("div");
+  for (const [key, label, unread, command] of STATISTICS) {
+    const row = sendable(el("div"), command);
     row.append(el("dt", "", label));
     const cell = el("dd");
     const reading = stats[key];
@@ -155,8 +277,9 @@ function renderStatistics(state) {
       cell.append(el("span", "when", when));
     }
     row.append(cell);
-    list.append(row);
+    rows.push(row);
   }
+  replaceIfChanged($("statistics"), rows);
 }
 
 /* Rows are kept between polls so a bar can slide from its old width to the new one. */
@@ -165,7 +288,7 @@ const dailyRows = new Map();
 function dailyRow(command) {
   let row = dailyRows.get(command);
   if (row) return row;
-  const li = el("li", "daily");
+  const li = sendable(el("li", "daily"), command);
   const status = el("span");
   const meter = el("div", "meter");
   meter.setAttribute("role", "progressbar");
@@ -222,17 +345,83 @@ function renderDailies(state) {
   if (!unchanged) list.replaceChildren(...rows);
 }
 
+/* The right-click menu: one item, which asks Zippy to send the row's command ahead of the routine ones.
+   Zippy itself decides when it may go (cooldowns, today's limits, huntbot's password); the menu only asks. */
+let menuFor = null;
+
+function menuItemFor(command) {
+  const phase = lastState?.phase;
+  const running = phase === "running" || phase === "paused" || phase === "banned";
+  return running ? [`Send ${command} next`, false] : [`Press Start first to send ${command}`, true];
+}
+
+function openMenu(row, event) {
+  const command = row.dataset.command;
+  const list = row.parentElement;
+  menuFor = { command, list, index: [...list.children].indexOf(row) };
+  const [text, unavailable] = menuItemFor(command);
+  const item = $("command-send");
+  item.textContent = text;
+  item.setAttribute("aria-disabled", String(unavailable));
+  const menu = $("command-menu");
+  menu.hidden = false;
+  /* A keyboard menu key reports no pointer position, so the menu opens under the row instead. */
+  const box = row.getBoundingClientRect();
+  const fromPointer = event.clientX !== 0 || event.clientY !== 0;
+  const x = fromPointer ? event.clientX : box.left + 8;
+  const y = fromPointer ? event.clientY : box.bottom;
+  const size = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - size.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - size.height - 8))}px`;
+  item.focus();
+}
+
+function closeMenu(returnFocus) {
+  if ($("command-menu").hidden) return;
+  $("command-menu").hidden = true;
+  const opened = menuFor;
+  menuFor = null;
+  if (returnFocus && opened) opened.list.children[opened.index]?.focus();
+}
+
+function queueNote(text, isError) {
+  const note = $("queue-note");
+  note.textContent = text;
+  note.classList.toggle("error", Boolean(isError));
+}
+
+async function sendFromMenu() {
+  if (!menuFor || $("command-send").getAttribute("aria-disabled") === "true") return;
+  const { command } = menuFor;
+  closeMenu(true);
+  try {
+    await post("/api/control", { action: "send", command });
+    queueNote(`Asked Zippy to send ${command} next. Activity shows when it goes out, or why it has to wait.`);
+  } catch (e) {
+    queueNote(`Could not ask for ${command}: ${e.message}`, true);
+  }
+}
+
+function logItem(line) {
+  const item = el("li");
+  item.append(el("time", "", clock(line.t)));
+  item.append(document.createTextNode(line.text));
+  return item;
+}
+
+/* Only new lines are added and the oldest dropped, so a busy log never rebuilds (and repaints) the whole list. */
 function renderLog(state) {
   if (state.log_seq === lastLog) return;
+  const added = state.log_seq - lastLog;
   lastLog = state.log_seq;
   const box = $("log");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
-  box.replaceChildren();
-  for (const line of state.log) {
-    const item = el("li");
-    item.append(el("time", "", clock(line.t)));
-    item.append(document.createTextNode(line.text));
-    box.append(item);
+  const lines = state.log;
+  if (added > 0 && added < lines.length && box.children.length > 0) {
+    box.append(...lines.slice(-added).map(logItem));
+    while (box.children.length > lines.length) box.firstElementChild.remove();
+  } else {
+    box.replaceChildren(...lines.map(logItem));
   }
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
@@ -260,6 +449,22 @@ function showLocked() {
   for (const node of document.querySelectorAll(".layout, .top-actions, #offline")) node.hidden = true;
 }
 
+/* Set while the theme reveal runs: the new theme is a live picture of the page, so any change to the page then
+   would be repainted under the moving circle on every frame. The newest state waits here and is drawn after. */
+let revealing = false;
+let heldState = null;
+
+function render(state) {
+  $("offline").hidden = true;
+  $("version").textContent = `v${state.version}`;
+  renderStatus(state);
+  renderHuntbot(state);
+  renderReminders(state);
+  renderStatistics(state);
+  renderDailies(state);
+  renderLog(state);
+}
+
 async function poll() {
   try {
     const response = await api("/api/state");
@@ -270,19 +475,17 @@ async function poll() {
     if (!response.ok) throw new Error(String(response.status));
     const state = await response.json();
     lastState = state;
-    $("offline").hidden = true;
-    $("version").textContent = `v${state.version}`;
-    renderStatus(state);
-    renderReminders(state);
-    renderStatistics(state);
-    renderDailies(state);
-    renderLog(state);
+    if (revealing) heldState = state;
+    else render(state);
   } catch {
     $("offline").hidden = false;
     document.body.dataset.phase = "offline";
     $("face").textContent = FACES.offline;
     $("phase").textContent = lastState ? "Lost connection" : "Can't reach Zippy";
-    for (const id of ["start", "pause", "stop", "refresh", "simulate-captcha", "dump-chat"]) $(id).disabled = true;
+    closeMenu(false);
+    for (const id of ["start", "pause", "stop", "refresh", "refresh-reminders", "huntbot-now", "huntbot-send", "simulate-captcha", "dump-chat"]) {
+      $(id).disabled = true;
+    }
   } finally {
     setTimeout(poll, 1000);
   }
@@ -419,6 +622,8 @@ function applyTheme(theme) {
   $("theme-tip").textContent = dark ? "Switch to light" : "Switch to dark";
 }
 
+let revealCount = 0;
+
 /* The new theme spreads out from the toggle; browsers without view transitions just switch. */
 function switchTheme() {
   const button = $("theme");
@@ -434,13 +639,22 @@ function switchTheme() {
   const box = button.getBoundingClientRect();
   const x = box.left + box.width / 2;
   const y = box.top + box.height / 2;
-  const reach = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 56;
+  const reach = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
   const root = document.documentElement;
   root.style.setProperty("--reveal-x", `${x}px`);
   root.style.setProperty("--reveal-y", `${y}px`);
   root.style.setProperty("--reveal-r", `${reach}px`);
   root.classList.add("revealing");
-  document.startViewTransition(commit).finished.finally(() => root.classList.remove("revealing"));
+  revealing = true;
+  /* A second click mid-reveal starts a new transition and ends the first; only the newest one cleans up. */
+  const reveal = ++revealCount;
+  document.startViewTransition(commit).finished.finally(() => {
+    if (reveal !== revealCount) return;
+    root.classList.remove("revealing");
+    revealing = false;
+    if (heldState) render(heldState);
+    heldState = null;
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -449,19 +663,46 @@ document.addEventListener("DOMContentLoaded", () => {
   $("start").addEventListener("click", () => control("start"));
   $("pause").addEventListener("click", () => control("pause"));
   $("stop").addEventListener("click", () => control("stop"));
-  $("refresh").addEventListener("click", () => {
-    const button = $("refresh");
+  /* One turn of the icon confirms the reads were queued. */
+  const refreshing = (id, action) => () => {
+    const button = $(id);
     button.classList.remove("spun");
     void button.offsetWidth;
     button.classList.add("spun");
-    control("refresh");
-  });
+    control(action);
+  };
+  $("refresh").addEventListener("click", refreshing("refresh", "refresh"));
+  $("refresh-reminders").addEventListener("click", refreshing("refresh-reminders", "refresh_reminders"));
   $("simulate-captcha").addEventListener("click", () =>
     developerAction("simulate_captcha", "Captcha simulated. Zippy pauses and rings at its next check."),
   );
   $("dump-chat").addEventListener("click", () =>
     developerAction("dump_chat", "Chat messages written to Activity."),
   );
+  $("huntbot-now").addEventListener("click", () => control("huntbot"));
+  $("huntbot-form").addEventListener("submit", sendPassword);
+  document.addEventListener("contextmenu", (event) => {
+    const row = event.target.closest?.("[data-command]");
+    if (!row) return;
+    event.preventDefault();
+    openMenu(row, event);
+  });
+  $("command-send").addEventListener("click", sendFromMenu);
+  $("command-menu").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+    } else if (event.key === "Tab") {
+      closeMenu(false);
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!$("command-menu").contains(event.target)) closeMenu(false);
+  });
+  /* Only the page scrolling moves the row away; the Activity log scrolling itself as lines arrive does not. */
+  addEventListener("scroll", (event) => event.target === document && closeMenu(false), true);
+  addEventListener("resize", () => closeMenu(false));
+  addEventListener("blur", () => closeMenu(false));
   $("egg").addEventListener("click", knock);
   $("open-settings").addEventListener("click", openSettings);
   if (KEY) poll();

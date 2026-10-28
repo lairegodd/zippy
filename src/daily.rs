@@ -242,14 +242,23 @@ impl Tracker {
     }
 
     fn due(&self, now: Instant, unix_ms: u64) -> bool {
+        self.blocked(now, unix_ms).is_none()
+    }
+
+    /// Why this command cannot be sent now, if it cannot.
+    fn blocked(&self, now: Instant, unix_ms: u64) -> Option<&'static str> {
         let (day, sends) = self.sends_today;
-        self.pending.is_none()
-            && self.next.is_none_or(|next| now >= next)
-            && !(day == owo_day(unix_ms) && sends >= MAX_SENDS_PER_DAY)
-            && match self.status {
-                Status::Unknown | Status::Left { .. } => true,
-                Status::UsedUp { retry_at } => unix_ms >= retry_at,
-            }
+        if self.pending.is_some() {
+            Some("Zippy is still waiting for OwO's reply to it")
+        } else if self.next.is_some_and(|next| now < next) {
+            Some("its cooldown has not ended yet")
+        } else if day == owo_day(unix_ms) && sends >= MAX_SENDS_PER_DAY {
+            Some("it was sent the most times Zippy allows in a day")
+        } else if matches!(self.status, Status::UsedUp { retry_at } if unix_ms < retry_at) {
+            Some("it is used up for today")
+        } else {
+            None
+        }
     }
 
     fn sent(&mut self, after_id: u64, now: Instant, unix_ms: u64) {
@@ -410,6 +419,12 @@ impl Dailies {
 
     pub fn next_due(&self, now: Instant, unix_ms: u64) -> Option<Daily> {
         self.trackers.iter().find(|t| t.due(now, unix_ms)).map(|t| t.daily)
+    }
+
+    /// Why `daily` cannot be sent now; `Err(None)` means it is off in the settings.
+    pub fn blocked(&self, daily: Daily, now: Instant, unix_ms: u64) -> Result<(), Option<&'static str>> {
+        let tracker = self.trackers.iter().find(|t| t.daily == daily).ok_or(None)?;
+        tracker.blocked(now, unix_ms).map_or(Ok(()), |why| Err(Some(why)))
     }
 
     pub fn sent(&mut self, daily: Daily, after_id: u64, now: Instant, unix_ms: u64) {

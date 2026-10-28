@@ -198,6 +198,7 @@ button.quiet {
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
   grid-template-areas:
     "status status"
+    "huntbot log"
     "reminders log"
     "statistics log"
     "dailies log";
@@ -205,6 +206,7 @@ button.quiet {
 }
 
 .status { grid-area: status; }
+.huntbot { grid-area: huntbot; }
 .reminders { grid-area: reminders; }
 .statistics { grid-area: statistics; }
 .dailies { grid-area: dailies; }
@@ -254,7 +256,7 @@ button.egg:hover:not(:disabled) {
 @media (max-width: 860px) {
   .layout {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "status" "reminders" "statistics" "dailies" "log";
+    grid-template-areas: "status" "huntbot" "reminders" "statistics" "dailies" "log";
   }
 }
 
@@ -344,6 +346,24 @@ button.egg:hover:not(:disabled) {
   font-size: 0.9rem;
 }
 
+.keys p {
+  margin: 2px 0 0;
+}
+
+/* What happened to the last right-click request; in the body colour, as it answers something the player did. */
+.queue-note {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.queue-note:empty {
+  display: none;
+}
+
+.queue-note.error {
+  color: var(--stop);
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -430,6 +450,15 @@ button.icon {
   padding: 0;
 }
 
+/* A disabled icon button dims its icon only, so its tooltip (which says what it does) stays readable. */
+button.icon:disabled {
+  opacity: 1;
+}
+
+button.icon:disabled svg {
+  opacity: 0.45;
+}
+
 /* One turn on click confirms the read was queued. */
 button.icon.spun svg {
   animation: spin 600ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -494,13 +523,8 @@ button.icon:focus-visible .tip {
   opacity: 0;
 }
 
-/* The new theme spreads from the toggle in a soft-edged circle, the way light spills from a switch. */
-@property --reveal {
-  syntax: "<length>";
-  inherits: false;
-  initial-value: 0px;
-}
-
+/* The new theme spreads from the toggle in a circle, the way light spills from a switch. A clip-path circle
+   is redrawn cheaply on every frame; an animated soft mask repainted the whole screen and stuttered. */
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;
@@ -508,12 +532,29 @@ button.icon:focus-visible .tip {
 }
 
 .revealing::view-transition-new(root) {
-  mask-image: radial-gradient(circle at var(--reveal-x) var(--reveal-y), #000 calc(var(--reveal) - 56px), transparent var(--reveal));
-  animation: theme-reveal 650ms cubic-bezier(0.33, 0, 0.2, 1) forwards;
+  animation: theme-reveal 600ms cubic-bezier(0.33, 0, 0.2, 1) both;
+}
+
+/* While the circle grows, nothing under it may animate on the main thread: the new theme is a live picture,
+   and a colour fading on any button would be repainted into it every frame. The compositor then only moves
+   the clip, which holds the screen's own refresh rate (60, 120 or 144 Hz). The toggle's own sun-and-moon
+   morph stays, as it is the gesture the circle grows from. */
+.revealing button,
+.revealing .tip,
+.revealing .daily .fill,
+.revealing .daily .count {
+  transition: none !important;
+}
+
+/* Log lines scrolled out of view are not laid out or painted, so capturing the page for the reveal stays cheap. */
+#log li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.45em;
 }
 
 @keyframes theme-reveal {
-  to { --reveal: var(--reveal-r); }
+  from { clip-path: circle(0 at var(--reveal-x) var(--reveal-y)); }
+  to { clip-path: circle(var(--reveal-r) at var(--reveal-x) var(--reveal-y)); }
 }
 
 .daily .meter {
@@ -635,6 +676,116 @@ dialog::backdrop {
   color: var(--stop);
 }
 
+.huntbot-status {
+  margin: 0 0 8px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.huntbot-status:empty {
+  display: none;
+}
+
+/* While OwO waits for the password, this panel is the one thing to act on: the waiting colour rings it. */
+.huntbot[data-state="password"] {
+  border-color: var(--wait);
+  box-shadow: 0 0 0 1px var(--wait);
+}
+
+.password {
+  margin: 4px 0 12px;
+}
+
+.password label {
+  display: block;
+  font-weight: 700;
+}
+
+.password small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.password small.error {
+  color: var(--stop);
+  font-weight: 700;
+}
+
+.password-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Wide letter spacing so the typed password can be checked against the image letter by letter. */
+.password input {
+  flex: 1 1 16ch;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--sunken);
+  color: var(--text);
+  font: inherit;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.password .save-state {
+  margin-top: 6px;
+}
+
+/* Every row reaches 8px past the text, so a hovered command row's highlight has room and the dividers line up. */
+.rows > li,
+.rows > div {
+  margin-inline: -8px;
+  padding-inline: 8px;
+}
+
+/* Rows with a command: the context-menu cursor tells mouse users a right-click does something here. */
+.rows > [data-command] {
+  cursor: context-menu;
+  border-radius: 6px;
+}
+
+.rows > [data-command]:hover {
+  background: var(--sunken);
+}
+
+/* The one floating element on the page, so it alone gets a shadow to lift it above the panels. */
+.command-menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+}
+
+.command-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+}
+
+.command-menu button:hover,
+.command-menu button:focus-visible {
+  background: var(--sunken);
+}
+
+.command-menu button[aria-disabled="true"] {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -661,7 +812,6 @@ dialog::backdrop {
   }
   /* No spreading circle: the theme still changes visibly, as a short crossfade. */
   .revealing::view-transition-new(root) {
-    mask-image: none;
     animation: fade 180ms ease-out;
   }
 }

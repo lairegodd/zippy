@@ -44,6 +44,7 @@ pub struct Settings {
     pub daily: [bool; Daily::ALL.len()],
     pub stats: bool,
     pub reminders: bool,
+    pub huntbot: bool,
     pub update_check: bool,
 }
 
@@ -57,6 +58,7 @@ impl Default for Settings {
             daily: [true; Daily::ALL.len()],
             stats: true,
             reminders: true,
+            huntbot: true,
             update_check: true,
         }
     }
@@ -97,6 +99,7 @@ impl Settings {
             pray: false,
             daily: [false; Daily::ALL.len()],
             stats: false,
+            huntbot: false,
             ..Self::default()
         };
         for (number, line) in text.lines().enumerate().map(|(i, l)| (i + 1, l.trim())) {
@@ -127,6 +130,7 @@ impl Settings {
             "pray" => Some(&mut self.pray),
             "stats" => Some(&mut self.stats),
             "reminders" => Some(&mut self.reminders),
+            "huntbot" => Some(&mut self.huntbot),
             "update_check" => Some(&mut self.update_check),
             _ => Daily::ALL.iter().position(|d| d.key() == key).map(|i| &mut self.daily[i]),
         };
@@ -166,6 +170,7 @@ impl Settings {
         values.extend(Daily::ALL.iter().zip(self.daily).map(|(d, on)| (d.key().to_owned(), on_off(on).to_owned())));
         values.push(("stats".to_owned(), on_off(self.stats).to_owned()));
         values.push(("reminders".to_owned(), on_off(self.reminders).to_owned()));
+        values.push(("huntbot".to_owned(), on_off(self.huntbot).to_owned()));
         values.push(("update_check".to_owned(), on_off(self.update_check).to_owned()));
         values
     }
@@ -199,12 +204,16 @@ piku = {}
 army = {}
 
 # Read cash, cookies, boss tickets, vote and huntbot on its own every 30 to 60 minutes: on or off.
-# The dashboard's refresh button reads them any time. This sends owocash, owo cookie, owoboss t,
+# The dashboard's refresh buttons read them any time. This sends owocash, owo cookie, owoboss t,
 # owovote and owohb (owohb collects a finished huntbot).
 stats = {}
 
 # Windows notifications when huntbot, daily, cookie or vote is ready: on or off.
 reminders = {}
+
+# Start huntbot again each time it comes back, for its full duration: on or off.
+# OwO asks for a password shown as an image; type it on the dashboard or in the Zippy window.
+huntbot = {}
 
 # Check GitHub for a newer Zippy at startup: on or off.
 update_check = {}
@@ -222,6 +231,7 @@ update_check = {}
             value("army"),
             value("stats"),
             value("reminders"),
+            value("huntbot"),
             value("update_check"),
         )
     }
@@ -262,7 +272,8 @@ mod tests {
         assert!(settings.owo && !settings.pray);
         assert_eq!(settings.enabled_dailies().collect::<Vec<_>>(), [Daily::Run, Daily::Piku]);
         let older_file = Settings::parse("mode = both\ngem1 = 57\nupdate_check = on\n").unwrap();
-        assert!(!older_file.owo && !older_file.pray && !older_file.stats && older_file.enabled_dailies().next().is_none());
+        assert!(!older_file.owo && !older_file.pray && !older_file.stats && !older_file.huntbot);
+        assert!(older_file.enabled_dailies().next().is_none());
         assert!(Settings::parse("run = yes").unwrap_err().contains("run must be on or off"));
     }
 

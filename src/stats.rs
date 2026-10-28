@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -22,6 +23,10 @@ pub enum Stat {
     BossTickets,
     BossTicketsMax,
     HuntbotReadyAt,
+    /// Huntbot's full duration in tenths of an hour (76 = 7.6h), from its Duration trait.
+    HuntbotHours,
+    /// Cowoncy a hunt of the full duration costs, from "Current Max Autohunt ... for N cowoncy".
+    HuntbotCost,
     DailyReadyAt,
     CookieReadyAt,
     VoteReadyAt,
@@ -30,7 +35,7 @@ pub enum Stat {
 }
 
 impl Stat {
-    pub const ALL: [Stat; 13] = [
+    pub const ALL: [Stat; 15] = [
         Stat::Cash,
         Stat::Cookies,
         Stat::Luck,
@@ -39,6 +44,8 @@ impl Stat {
         Stat::BossTickets,
         Stat::BossTicketsMax,
         Stat::HuntbotReadyAt,
+        Stat::HuntbotHours,
+        Stat::HuntbotCost,
         Stat::DailyReadyAt,
         Stat::CookieReadyAt,
         Stat::VoteReadyAt,
@@ -56,6 +63,8 @@ impl Stat {
             Stat::BossTickets => "boss_tickets",
             Stat::BossTicketsMax => "boss_tickets_max",
             Stat::HuntbotReadyAt => "huntbot_ready_at",
+            Stat::HuntbotHours => "huntbot_hours",
+            Stat::HuntbotCost => "huntbot_cost",
             Stat::DailyReadyAt => "daily_ready_at",
             Stat::CookieReadyAt => "cookie_ready_at",
             Stat::VoteReadyAt => "vote_ready_at",
@@ -217,9 +226,7 @@ fn named_events(content: &str, detail: &str, player: &str, posted: u64) -> Vec<E
         events.extend(result.map(Event::Battle));
         return events;
     }
-    if let Some(cash) = number_after(content, &format!("| {player}, you currently have "))
-        .filter(|_| content.contains("cowoncy"))
-    {
+    if let Some(cash) = cash_of(content, player) {
         set(Stat::Cash, cash);
     }
     if let Some(cookies) = number_after(content, &format!("{player}! You currently have "))
@@ -277,11 +284,56 @@ fn named_events(content: &str, detail: &str, player: &str, posted: u64) -> Vec<E
         if let Some(essence) = field.and_then(number) {
             set(Stat::Essence, essence);
         }
-        if let Some(at) = huntbot_ready_at(&format!("{content} | {detail}"), posted) {
+        let text = format!("{content} | {detail}");
+        if let Some(at) = huntbot_ready_at(&text, posted) {
             set(Stat::HuntbotReadyAt, at);
         }
+        if let Some(tenths) = huntbot_hours(&text) {
+            set(Stat::HuntbotHours, tenths);
+        }
+        if let Some(cost) = huntbot_cost(&text) {
+            set(Stat::HuntbotCost, cost);
+        }
+    }
+    // "BEEP BOOP. Player, YOU SPENT 1,216 cowoncy I WILL BE BACK IN 1H 36M WITH 152 ANIMALS, ..."
+    let upper = content.to_uppercase();
+    if upper.contains("YOU SPENT")
+        && upper.contains(&player.to_uppercase())
+        && let Some(wait) = wait_after(&upper, "BACK IN ")
+    {
+        set(Stat::HuntbotReadyAt, posted + wait);
     }
     events
+}
+
+/// "Player, you currently have 2,953 cowoncy!"
+pub fn cash_of(content: &str, player: &str) -> Option<u64> {
+    number_after(content, &format!("| {player}, you currently have ")).filter(|_| content.contains("cowoncy"))
+}
+
+/// Huntbot's full duration in tenths of an hour, from its profile: "Duration - 7.6H", else its level ("Lvl 71"),
+/// which OwO turns into 0.5h plus 0.1h a level (level 0 is 0.5h, level 235 is 24h).
+pub fn huntbot_hours(text: &str) -> Option<u64> {
+    let field = text.split_once("Duration -")?.1;
+    let start = field.find(|c: char| c.is_ascii_digit()).filter(|&at| at <= 12)?;
+    let rest = &field[start..];
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
+    let tenths = if rest[end..].starts_with(['H', 'h']) {
+        let (whole, fraction) = rest[..end].split_once('.').unwrap_or((&rest[..end], "0"));
+        let fraction = fraction.get(..1).unwrap_or("0");
+        whole.parse::<u64>().ok()?.checked_mul(10)?.checked_add(fraction.parse().ok()?)?
+    } else {
+        let level: u64 = number(field.split_once("Lvl")?.1)?;
+        5 + level
+    };
+    (5..=240).contains(&tenths).then_some(tenths)
+}
+
+/// What a hunt of the full duration costs: "Current Max Autohunt: 722 animals, ... for 5,776 cowoncy".
+pub fn huntbot_cost(text: &str) -> Option<u64> {
+    let line = text.split_once("Current Max Autohunt")?.1;
+    let (before, _) = line.split_once("cowoncy")?;
+    number(before.rsplit_once(" for ")?.1.trim_start_matches([' ', '|']))
 }
 
 /// The wait after `marker`, skipping the punctuation Discord leaves where bold text was split off.
@@ -327,12 +379,18 @@ pub struct Watcher {
     last_id: u64,
     /// Battles at or before this message were fought before the run and are not counted in it.
     battles_after: u64,
+    /// Battles already counted. A battle reply can be read before its result is on screen, so battles are
+    /// looked at again on later scans and counted when the result shows, once each.
+    battles_counted: VecDeque<u64>,
     expected: Vec<(Query, u64, Instant)>,
 }
 
+/// More than the chat ever shows at once, so a battle on screen is never counted twice.
+const BATTLES_REMEMBERED: usize = 128;
+
 impl Watcher {
     pub fn new() -> Self {
-        Self { last_id: 0, battles_after: 0, expected: Vec::new() }
+        Self { last_id: 0, battles_after: 0, battles_counted: VecDeque::new(), expected: Vec::new() }
     }
 
     pub fn counting_battles_after(self, id: u64) -> Self {
@@ -346,7 +404,8 @@ impl Watcher {
         }
     }
 
-    /// Each message is read once; until the player's name is known, only expected replies are read.
+    /// Each message is read once, except a battle without its result yet, which is read again until the
+    /// result shows. Until the player's name is known, only expected replies are read.
     pub fn observe(&mut self, messages: &[ChatMessage], player: Option<&str>, now: Instant) -> Vec<(Event, u64)> {
         self.expected.retain(|(_, _, sent)| now < *sent + REPLY_TIMEOUT);
         let mut ordered: Vec<&ChatMessage> = messages.iter().collect();
@@ -362,12 +421,23 @@ impl Watcher {
                 self.expected.remove(i);
                 events.extend(found.into_iter().map(|e| (e, posted)));
             }
-            if let Some(player) = player
-                && message.id > self.last_id
-            {
-                let named = named_events(content, &message.detail, player, posted);
-                let counted = |e: &Event| message.id > self.battles_after || !matches!(e, Event::Battle(_));
-                events.extend(named.into_iter().filter(counted).map(|e| (e, posted)));
+            let Some(player) = player else { continue };
+            let fresh = message.id > self.last_id;
+            for event in named_events(content, &message.detail, player, posted) {
+                match event {
+                    Event::Battle(_) => {
+                        if message.id <= self.battles_after || self.battles_counted.contains(&message.id) {
+                            continue;
+                        }
+                        if self.battles_counted.len() == BATTLES_REMEMBERED {
+                            self.battles_counted.pop_front();
+                        }
+                        self.battles_counted.push_back(message.id);
+                        events.push((event, posted));
+                    }
+                    Event::Set(..) if fresh => events.push((event, posted)),
+                    Event::Set(..) => {}
+                }
             }
         }
         if player.is_some() {
@@ -532,6 +602,19 @@ mod tests {
     }
 
     #[test]
+    fn a_started_huntbot_sets_its_return_and_the_profile_its_duration_and_cost() {
+        let spent = "OwO Verified App , :rbot: | BEEP BOOP. Ho-oh, YOU SPENT 1,216 cowoncy :blank: | I WILL BE BACK IN 1H 36M WITH 152 ANIMALS, :blank: | 1960 ESSENCE, AND 2632 EXPERIENCE , 6:10 PM";
+        let profile = "OwO Verified App , Ho-oh's HuntBot BEEP. BOOP. I AM HUNTBOT. ⏳ Duration - 7.6H Lvl 71 [8271/14370] :cowoncy: Cost - 8 , 6:43 PM";
+        let detail = "Animal Essence - || 21,026 || Current Max Autohunt: 722 animals, 9,310 essence, and 12,502 xp for 5,776 cowoncy";
+        let events = Watcher::new().observe(&[msg(T, spent, ""), msg(T + 1000, profile, detail)], Some("Ho-oh"), Instant::now());
+        let huntbot = sets(&events);
+        assert!(huntbot.contains(&(Stat::HuntbotReadyAt, T + 96 * 60_000)));
+        assert!(huntbot.contains(&(Stat::HuntbotHours, 76)));
+        assert!(huntbot.contains(&(Stat::HuntbotCost, 5776)));
+        assert!(Watcher::new().observe(&[msg(T, spent, "")], Some("Someone"), Instant::now()).is_empty());
+    }
+
+    #[test]
     fn a_claimed_daily_sets_the_next_one_the_streak_and_unread_mail() {
         let claim = "OwO Verified App , 💰 | Player, Here is your daily :cowoncy: 5000 Cowoncy! :blank: | You're on a 1013 daily streak! 📦 | You received a lootbox! ⏱ | Your next daily is in: 22H 52M 34S 📪 | Player, you have 3 unread mail! , 3:07 PM";
         let events = Watcher::new().observe(&[msg(T, claim, "")], Some("Player"), Instant::now());
@@ -552,6 +635,18 @@ mod tests {
         watcher.sent("owohb", snowflake_at(T + 500), now);
         let events = watcher.observe(&[msg(T + 1000, HUNTBOT_BACK, "")], None, now);
         assert_eq!(sets(&events), [(Stat::HuntbotReadyAt, T + 1000)]);
+    }
+
+    #[test]
+    fn a_battle_read_before_its_result_is_counted_when_the_result_shows() {
+        let now = Instant::now();
+        let tie = "OwO Verified App , Player goes into battle! shi L. 35 :hedgebot: - :mythic: :msstaff: 《°w》 L. 31 :gowl: - :epic: :erstaff: Image It's a tie in 24 turns! | +100 xp | Streak: 851 , 2:21 PM";
+        let pending = "OwO Verified App , Player goes into battle! shi L. 35 :hedgebot: - :mythic: :msstaff: 《°w》 L. 31 :gowl: - :epic: :erstaff: Image , 2:21 PM";
+        let mut watcher = Watcher::new();
+        assert!(watcher.observe(&[msg(T, pending, "")], Some("Player"), now).is_empty());
+        let events = watcher.observe(&[msg(T, tie, "")], Some("Player"), now);
+        assert_eq!(events.iter().filter(|(e, _)| *e == Event::Battle(Outcome::Draw)).count(), 1);
+        assert!(watcher.observe(&[msg(T, tie, "")], Some("Player"), now).is_empty(), "counted once");
     }
 
     #[test]
