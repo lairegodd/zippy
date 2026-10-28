@@ -2,9 +2,9 @@
 
 Zippy is a Windows console program that sends OwO bot commands (`owoh`, `owob`) for you in a Discord channel, in the Discord desktop app or in your web browser. It reads the chat before every command and stops when OwO asks for a captcha or announces a ban.
 
-> **Read this first.** This bot is for educational purposes. Automating a user account breaks Discord's Terms of Service (ToS) and OwO's rules against macros. Your Discord account or your OwO profile can be banned. You use Zippy at your own risk.
+> **Read this first!** This bot is for educational purposes. Automating a user account breaks Discord's Terms of Service (ToS) and OwO's rules against macros. Your Discord account or your OwO profile can be banned. You use Zippy at your own risk.
 
-## What it does
+## What's this?
 
 - Sends these commands, each on its own timer, with at least 2.5 seconds between any two:
 
@@ -91,13 +91,6 @@ Level and XP are not shown: OwO sends them as an image, which Zippy cannot read.
 
 Every value Zippy reads is also appended to `zippy-stats.jsonl` next to the exe (one JSON object per line: time, stat, value), so the dashboard shows the last known values after a restart. The file starts over (the old one is kept as `zippy-stats.old.jsonl`) once it passes 1 MB.
 
-#### How the dashboard is protected
-
-- It listens on `127.0.0.1` only, so other computers cannot reach it.
-- It only works through the link Zippy prints when it starts. The key in that link changes on every start and sits after a `#`, which browsers never send to any server. The page keeps it only for that browser tab and sends it with each request, so other websites, and other programs' web pages on your PC, cannot use the dashboard.
-- Requests that change something (Start, Stop, settings) must also come from the dashboard page itself.
-- Do not share the link Zippy prints: anyone with it can control Zippy until you close it.
-
 ### Command line options
 
 | Option | What it does |
@@ -114,13 +107,15 @@ At startup Zippy asks GitHub whether a newer release exists. If one does, it ask
 
 If the download fails or the checksum does not match, nothing is replaced. Zippy needs write access to its own folder to update, so keep it somewhere like `Documents` rather than `Program Files`. To turn the check off, set `update_check = off`.
 
-### When the chat cannot be read
+### About Windows SmartScreen.....
 
-Zippy reads Discord through Windows accessibility (UI Automation). Chromium-based apps stop exposing a page nobody has looked at for a while, so if the chat is not readable Zippy brings the Discord window to the front once, briefly, to wake it. In the desktop app nothing else is needed. In a browser, if Zippy still reports that chat messages are not readable, keep the Discord tab visible, or start the browser with:
+The first time you open a `zippy.exe` downloaded with your browser, Windows may show "Windows protected your PC". Zippy is not code-signed, and SmartScreen warns about any new file that few people have downloaded yet. Check that the file came from this repository's Releases page (its SHA256 is listed in the release notes), then click **More info** and **Run anyway**. Windows remembers that choice for this file.
 
-```
---force-renderer-accessibility
-```
+You can also right-click `zippy.exe`, choose **Properties**, tick **Unblock**, and press **OK** before the first run.
+
+Updates that Zippy installs itself do not show the prompt again. Windows only checks files marked as downloaded by a browser, and Zippy's updater checks the SHA256 instead.
+
+A code-signing certificate would not remove the prompt right away either. Since 2024, signed files also start without reputation and only stop warning after many clean downloads. The one way to skip it entirely is the Microsoft Store.
 
 ## Settings
 
@@ -185,29 +180,6 @@ cargo test
 
 The exe is written to `target\release\zippy.exe`. Use `build-release.ps1` for anything you share: a plain `cargo build --release` embeds your home folder path (and Windows user name) in the exe.
 
-### Publishing a release
-
-The updater looks for the latest GitHub release whose tag is `vX.Y.Z` and newer than the running build, and downloads the asset named `zippy.exe`. So for each release, bump `version` in `Cargo.toml`, build with `build-release.ps1`, tag the release with the same version (for example `v1.1.0`), and attach the exe as `zippy.exe`.
-
-Release notes follow this layout (leave out a section that has nothing in it):
-
-```markdown
-## Changelogs
-
-### Added
-1. ...
-
-### Fixed
-1. ...
-
-### Notes
-- ...
-
-### Disclaimer
-- ...
-
-**SHA256:** `...`
-```
 
 ## What Zippy leaves on your PC
 
@@ -228,8 +200,17 @@ Planned, not built yet:
 5. A helper for daily quests.
 6. An account switcher for quests that need two players, such as "Receive an action from a friend".
 
+### FAQ
+-  "When the chat cannot be read, what should i do?"
+
+Zippy reads Discord through Windows accessibility (UI Automation). Chromium-based apps stop exposing a page nobody has looked at for a while, so if the chat is not readable Zippy brings the Discord window to the front once, briefly, to wake it. In the desktop app nothing else is needed. In a browser, if Zippy still reports that chat messages are not readable, keep the Discord tab visible, or start the browser with:
+
+```
+--force-renderer-accessibility
+```
+
 ## Credits
 
 - [Paiiss/owofarm](https://github.com/Paiiss/owofarm) for give me an inspiration to make this project.
 - Some features from [Kiy0w0/owomizu](https://github.com/Kiy0w0/owomizu) may be added to Zippy later.
-- The dashboard uses the [Nunito](https://github.com/googlefonts/nunito) font, licensed under the SIL Open Font License 1.1 (`web/OFL-Nunito.txt`).
+- The localhos dashboard uses the [Nunito](https://github.com/googlefonts/nunito) font, licensed under the SIL Open Font License 1.1 (`web/OFL-Nunito.txt`).
