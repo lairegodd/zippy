@@ -214,3 +214,9 @@ Zippy reads Discord through Windows accessibility (UI Automation). Chromium-base
 - [Paiiss/owofarm](https://github.com/Paiiss/owofarm) for give me an inspiration to make this project.
 - Some features from [Kiy0w0/owomizu](https://github.com/Kiy0w0/owomizu) may be added to Zippy later.
 - The localhos dashboard uses the [Nunito](https://github.com/googlefonts/nunito) font, licensed under the SIL Open Font License 1.1 (`web/OFL-Nunito.txt`).
+
+## License
+
+Zippy is free software under the [GNU General Public License v3.0](LICENSE): you may use, change and share it, and anyone who shares a changed version must share its source under the same license. The Nunito font keeps its own license (SIL Open Font License 1.1).
+
+Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md).
