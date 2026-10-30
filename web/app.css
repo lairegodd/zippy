@@ -341,27 +341,154 @@ button.egg:hover:not(:disabled) {
 
 .keys {
   grid-area: keys;
+  display: flex;
+  gap: 0.3em;
   margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  border-radius: 4px;
+}
+
+.tip-label {
+  flex: none;
+  font-weight: 700;
+}
+
+/* All tips share one cell, so the row keeps the height of the longest and the card never jumps. */
+.tip-stack {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+/* A short crossfade marks that the tip changed; opacity alone, so the compositor does it. */
+.tip-stack > span {
+  grid-area: 1 / 1;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 160ms ease-out, visibility 160ms;
+}
+
+.tip-stack > span.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.give-cookie {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.give-cookie label {
+  display: block;
+  font-weight: 700;
+}
+
+.give-cookie small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.give-cookie small.error {
+  color: var(--stop);
+  font-weight: 700;
+}
+
+.give-cookie input {
+  flex: 1 1 16ch;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--sunken);
+  color: var(--text);
+  font: inherit;
+}
+
+.log-summary {
+  margin: 0;
   color: var(--muted);
   font-size: 0.9rem;
 }
 
-.keys p {
-  margin: 2px 0 0;
-}
-
-/* What happened to the last right-click request; in the body colour, as it answers something the player did. */
-.queue-note {
-  color: var(--text);
+.log-summary.error {
+  color: var(--stop);
   font-weight: 700;
 }
 
-.queue-note:empty {
-  display: none;
+/* The browser's pale default placeholder misses AA contrast on the sunken field. */
+.give-cookie input::placeholder {
+  color: var(--muted);
 }
 
-.queue-note.error {
+/* Toasts stack in the bottom-right corner, away from the controls they report on, and leave by themselves. */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: min(380px, calc(100vw - 32px));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+/* Floats over the panels like the command menu, so it shares the menu's shadow. */
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 6px 10px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+  animation: toast-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 160ms, transform 160ms;
+}
+
+.toast > span {
+  flex: 1;
+  padding-top: 2px;
+}
+
+.toast.error {
+  border-color: var(--stop);
   color: var(--stop);
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+button.toast-close {
+  flex: none;
+  width: 44px;
+  min-height: 32px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
 }
 
 .panel {
@@ -807,7 +934,8 @@ dialog::backdrop {
   button.icon.spun svg {
     animation: none;
   }
-  .developer.unlocked {
+  .developer.unlocked,
+  .toast {
     animation-name: fade;
   }
   /* No spreading circle: the theme still changes visibly, as a short crossfade. */

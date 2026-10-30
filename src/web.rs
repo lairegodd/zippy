@@ -362,6 +362,10 @@ fn control(request: &Request) -> Response {
             Some(command) => Control::Send(command),
             None => return Response::error(400, "Zippy can't send that command from the dashboard"),
         },
+        Some("give_cookie") => match body["to"].as_str().and_then(crate::cookie::Recipient::parse) {
+            Some(recipient) => Control::GiveCookie(recipient),
+            None => return Response::error(400, "type a Discord username (letters, digits, _ and .) or a User ID"),
+        },
         Some("simulate_captcha") if debug => Control::SimulateCaptcha,
         Some("dump_chat") if debug => Control::DumpChat,
         _ => return Response::error(400, "unknown action"),
@@ -404,6 +408,7 @@ fn state() -> Value {
         "now": crate::unix_ms_now(),
         "phase": phase,
         "debug": hub.debug,
+        "tray": hub.tray,
         "reason": reason,
         "target": hub.target.as_ref().map(|t| json!({ "app": t.app, "title": t.title })),
         "stats": {
@@ -432,6 +437,8 @@ fn state() -> Value {
             "need": huntbot.need,
             "command": huntbot.command,
         },
+        "cookie": { "state": hub.cookie.state, "recipient": hub.cookie.recipient },
+        "notices": hub.notices().map(|(seq, text, error)| json!({ "seq": seq, "text": text, "error": error })).collect::<Vec<_>>(),
         "dailies": dailies,
         "log_seq": hub.log_seq(),
         "log": log,
@@ -524,6 +531,8 @@ mod tests {
             r#"{"action":"send","command":"owocash "}"#,
             r#"{"action":"send","command":"owoh"}"#,
             r#"{"action":"send"}"#,
+            r#"{"action":"give_cookie","to":"friend\nowo give @someone 1000"}"#,
+            r#"{"action":"give_cookie","to":"@everyone hi"}"#,
         ] {
             assert_eq!(call(&server, "POST", "/api/control", &good, body), 400, "{body}");
         }

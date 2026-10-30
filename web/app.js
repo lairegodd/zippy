@@ -35,7 +35,7 @@ const STATISTICS = [
   ["essence", "Animal essence", "Not read yet", "owohb"],
   ["streak", "Battle streak", "Not read yet", "owob"],
   ["daily_streak", "Daily streak", "Shows after owodaily", "owodaily"],
-  ["unread_mail", "Unread mail", "Shows after owodaily", null],
+  ["unread_mail", "Unread mail", "Shows after owodaily", "owomail"],
   ["boss_tickets", "Boss tickets", "Not read yet", "owoboss t"],
 ];
 
@@ -314,14 +314,16 @@ function dailyStatus(daily, now) {
   return ["count", daily.limit ? `${daily.left} of ${daily.limit} left today` : `${daily.left} left today`];
 }
 
+/* owodaily is shown once, in Reminders; this panel lists the commands with a daily limit. */
 function renderDailies(state) {
   const list = $("dailies");
-  if (state.dailies.length === 0) {
+  const limited = state.dailies.filter((daily) => daily.command !== "owodaily");
+  if (limited.length === 0) {
     dailyRows.clear();
-    list.replaceChildren(el("li", "unknown", "None turned on. Turn them on in Settings."));
+    list.replaceChildren(el("li", "unknown", "None turned on. Turn on oworun, owopup, owopiku or owoarmy in Settings."));
     return;
   }
-  const rows = state.dailies.map((daily) => {
+  const rows = limited.map((daily) => {
     const row = dailyRow(daily.command);
     const [className, text] = dailyStatus(daily, state.now);
     row.status.className = className;
@@ -339,7 +341,7 @@ function renderDailies(state) {
     return row.li;
   });
   for (const command of dailyRows.keys()) {
-    if (!state.dailies.some((daily) => daily.command === command)) dailyRows.delete(command);
+    if (!limited.some((daily) => daily.command === command)) dailyRows.delete(command);
   }
   const unchanged = rows.length === list.children.length && rows.every((li, i) => list.children[i] === li);
   if (!unchanged) list.replaceChildren(...rows);
@@ -384,10 +386,41 @@ function closeMenu(returnFocus) {
   if (returnFocus && opened) opened.list.children[opened.index]?.focus();
 }
 
-function queueNote(text, isError) {
-  const note = $("queue-note");
-  note.textContent = text;
-  note.classList.toggle("error", Boolean(isError));
+/* Short-lived notices in the bottom-right corner. Each leaves on its own after a few seconds (errors stay
+   longer), waits while the pointer or focus is on it, and can be dismissed at once. At most three show. */
+const TOAST_MS = 5000;
+const TOAST_ERROR_MS = 8000;
+const MAX_TOASTS = 3;
+
+function dismissToast(item) {
+  if (item.classList.contains("leaving")) return;
+  clearTimeout(item.timer);
+  item.classList.add("leaving");
+  setTimeout(() => item.remove(), 180);
+}
+
+function toast(text, isError) {
+  const list = $("toasts");
+  const item = el("li", isError ? "toast error" : "toast");
+  item.append(el("span", "", text));
+  const close = el("button", "toast-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "Dismiss");
+  close.addEventListener("click", () => dismissToast(item));
+  item.append(close);
+  const life = isError ? TOAST_ERROR_MS : TOAST_MS;
+  const arm = () => {
+    clearTimeout(item.timer);
+    item.timer = setTimeout(() => dismissToast(item), life);
+  };
+  item.addEventListener("pointerenter", () => clearTimeout(item.timer));
+  item.addEventListener("pointerleave", arm);
+  item.addEventListener("focusin", () => clearTimeout(item.timer));
+  item.addEventListener("focusout", arm);
+  list.append(item);
+  const live = [...list.children].filter((n) => !n.classList.contains("leaving"));
+  for (const old of live.slice(0, Math.max(0, live.length - MAX_TOASTS))) dismissToast(old);
+  arm();
 }
 
 async function sendFromMenu() {
@@ -396,10 +429,46 @@ async function sendFromMenu() {
   closeMenu(true);
   try {
     await post("/api/control", { action: "send", command });
-    queueNote(`Asked Zippy to send ${command} next. Activity shows when it goes out, or why it has to wait.`);
+    toast(`Asked Zippy to send ${command} next. Activity shows when it goes out, or why it has to wait.`);
   } catch (e) {
-    queueNote(`Could not ask for ${command}: ${e.message}`, true);
+    toast(`Could not ask for ${command}: ${e.message}`, true);
   }
+}
+
+/* The Pro tip changes every 5 seconds. It holds still while the pointer or focus is on it, while the tab is
+   hidden, and during the theme reveal (a change then would be repainted under the moving circle).
+   Every tip sits in the same grid cell, only one visible, so the card is always as tall as the longest tip
+   and never grows or shrinks as they change. */
+const TIP_MS = 5000;
+let tipIndex = 0;
+let tipKey = "";
+
+function tips() {
+  const list = [
+    "use F8 to pause or resume, and use F10 to quit 😏",
+    "right-click a row in Huntbot, Reminders, Statistics or Daily commands to send its command next (Shift+F10 with the keyboard).",
+  ];
+  if (lastState?.tray) list.push("Zippy's window waits in the taskbar tray. Click its icon to show it, right-click for Start, Stop and Exit.");
+  return list;
+}
+
+function renderTips() {
+  const list = tips();
+  const key = list.join("\n");
+  if (key === tipKey) return;
+  tipKey = key;
+  tipIndex %= list.length;
+  $("tip-stack").replaceChildren(...list.map((text, i) => el("span", i === tipIndex ? "active" : "", text)));
+}
+
+function nextTip() {
+  const box = $("pro-tip");
+  if (document.hidden || revealing || box.matches(":hover, :focus-within")) return;
+  const spans = $("tip-stack").children;
+  if (spans.length < 2) return;
+  spans[tipIndex].classList.remove("active");
+  tipIndex = (tipIndex + 1) % spans.length;
+  spans[tipIndex].classList.add("active");
 }
 
 function logItem(line) {
@@ -409,21 +478,118 @@ function logItem(line) {
   return item;
 }
 
+/* Activity starts collapsed: most of the time only the macro running matters. While it is closed, warnings
+   ("[!]" lines) that arrive are counted, so a problem is noticed and can be opened to read. */
+let logOpen = localStorage.getItem("zippy-log") === "open";
+let unseenWarnings = 0;
+
+function renderLogToggle() {
+  const box = $("log");
+  box.hidden = !logOpen;
+  $("log-toggle").textContent = logOpen ? "Collapse" : "Expand";
+  $("log-toggle").setAttribute("aria-expanded", String(logOpen));
+  const summary = $("log-summary");
+  summary.hidden = logOpen;
+  summary.classList.toggle("error", unseenWarnings > 0);
+  summary.textContent =
+    unseenWarnings === 0
+      ? "Collapsed. Expand it to read what Zippy has done."
+      : `${unseenWarnings} new ${unseenWarnings === 1 ? "warning" : "warnings"} while collapsed. Expand to read them.`;
+}
+
+function toggleLog() {
+  logOpen = !logOpen;
+  localStorage.setItem("zippy-log", logOpen ? "open" : "closed");
+  if (logOpen) unseenWarnings = 0;
+  renderLogToggle();
+  if (logOpen) $("log").scrollTop = $("log").scrollHeight;
+}
+
 /* Only new lines are added and the oldest dropped, so a busy log never rebuilds (and repaints) the whole list. */
 function renderLog(state) {
   if (state.log_seq === lastLog) return;
+  const first = lastLog < 0;
   const added = state.log_seq - lastLog;
   lastLog = state.log_seq;
   const box = $("log");
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  const atBottom = box.hidden || box.scrollHeight - box.scrollTop - box.clientHeight < 24;
   const lines = state.log;
+  const fresh = added > 0 && added < lines.length ? lines.slice(-added) : lines;
   if (added > 0 && added < lines.length && box.children.length > 0) {
-    box.append(...lines.slice(-added).map(logItem));
+    box.append(...fresh.map(logItem));
     while (box.children.length > lines.length) box.firstElementChild.remove();
   } else {
     box.replaceChildren(...lines.map(logItem));
   }
-  if (atBottom) box.scrollTop = box.scrollHeight;
+  if (!logOpen && !first) {
+    const warnings = fresh.filter((line) => line.text.startsWith("[!]")).length;
+    if (warnings > 0) {
+      unseenWarnings += warnings;
+      renderLogToggle();
+    }
+  }
+  if (atBottom && !box.hidden) box.scrollTop = box.scrollHeight;
+}
+
+/* Notices from Zippy (such as how a cookie went) show as toasts, each once; ones from before the page opened
+   are not replayed. */
+let lastNotice = null;
+
+function renderNotices(state) {
+  const newest = state.notices.reduce((max, n) => Math.max(max, n.seq), 0);
+  if (lastNotice !== null) {
+    for (const notice of state.notices) if (notice.seq > lastNotice) toast(notice.text, notice.error);
+  }
+  lastNotice = Math.max(lastNotice ?? 0, newest);
+}
+
+/* Giving a cookie: a username first; if OwO can't tell who that is, Zippy asks for the person's User ID. */
+const USERNAME = /^@?[A-Za-z0-9_.]{2,32}$/;
+const USER_ID = /^(<@!?)?\d{17,20}>?$/;
+let cookieState = "idle";
+
+function renderCookie(state) {
+  const cookie = state.cookie;
+  const active = ["running", "paused"].includes(state.phase);
+  const button = $("cookie-send");
+  const input = $("cookie-to");
+  const sending = cookie.state === "sending";
+  button.disabled = !active || sending;
+  button.textContent = sending ? "Giving…" : "Give cookie";
+  const hint =
+    cookie.state === "need_id"
+      ? `OwO couldn't find ${cookie.recipient}. Paste their User ID instead: in Discord, right-click their name and choose Copy User ID (turn on Developer Mode in Discord's Advanced settings first).`
+      : sending
+        ? `Giving a cookie to ${cookie.recipient}…`
+        : "Their Discord username, or their User ID. Zippy sends owocookie for you.";
+  if ($("cookie-hint").textContent !== hint) $("cookie-hint").textContent = hint;
+  $("cookie-hint").classList.toggle("error", cookie.state === "need_id");
+  input.placeholder = cookie.state === "need_id" ? "User ID, such as 408785106942164992" : "username";
+  if (cookie.state === "need_id" && cookieState !== "need_id") {
+    input.value = "";
+    input.focus();
+  }
+  cookieState = cookie.state;
+}
+
+async function giveCookie(event) {
+  event.preventDefault();
+  const input = $("cookie-to");
+  const to = input.value.trim();
+  /* An ID is all digits, which the username pattern would also accept, so it is checked first, as Zippy does. */
+  const isId = USER_ID.test(to);
+  if (!isId && !USERNAME.test(to)) {
+    toast("Type a Discord username (letters, digits, _ and .) or a User ID (17 to 20 digits).", true);
+    input.focus();
+    return;
+  }
+  try {
+    await post("/api/control", { action: "give_cookie", to });
+    if (!isId) localStorage.setItem("zippy-cookie-to", to);
+    toast(`Asked Zippy to give a cookie to ${isId ? "that User ID" : to.startsWith("@") ? to : `@${to}`}.`);
+  } catch (e) {
+    toast(`Could not give the cookie: ${e.message}`, true);
+  }
 }
 
 /* The key arrives in the link's #fragment, moves to sessionStorage (this port only), and leaves the address bar. */
@@ -463,6 +629,9 @@ function render(state) {
   renderStatistics(state);
   renderDailies(state);
   renderLog(state);
+  renderTips();
+  renderCookie(state);
+  renderNotices(state);
 }
 
 async function poll() {
@@ -483,7 +652,7 @@ async function poll() {
     $("face").textContent = FACES.offline;
     $("phase").textContent = lastState ? "Lost connection" : "Can't reach Zippy";
     closeMenu(false);
-    for (const id of ["start", "pause", "stop", "refresh", "refresh-reminders", "huntbot-now", "huntbot-send", "simulate-captcha", "dump-chat"]) {
+    for (const id of ["start", "pause", "stop", "refresh", "refresh-reminders", "huntbot-now", "huntbot-send", "cookie-send", "simulate-captcha", "dump-chat"]) {
       $(id).disabled = true;
     }
   } finally {
@@ -681,6 +850,11 @@ document.addEventListener("DOMContentLoaded", () => {
   );
   $("huntbot-now").addEventListener("click", () => control("huntbot"));
   $("huntbot-form").addEventListener("submit", sendPassword);
+  $("cookie-form").addEventListener("submit", giveCookie);
+  $("cookie-to").value = localStorage.getItem("zippy-cookie-to") ?? "";
+  $("log-toggle").addEventListener("click", toggleLog);
+  renderLogToggle();
+  renderTips();
   document.addEventListener("contextmenu", (event) => {
     const row = event.target.closest?.("[data-command]");
     if (!row) return;
@@ -704,6 +878,7 @@ document.addEventListener("DOMContentLoaded", () => {
   addEventListener("resize", () => closeMenu(false));
   addEventListener("blur", () => closeMenu(false));
   $("egg").addEventListener("click", knock);
+  setInterval(nextTip, TIP_MS);
   $("open-settings").addEventListener("click", openSettings);
   if (KEY) poll();
   else showLocked();

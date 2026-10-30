@@ -1,18 +1,22 @@
 use std::collections::VecDeque;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
+use crate::cookie::{self, Recipient};
 use crate::daily::Daily;
 use crate::huntbot;
 use crate::stats::Stats;
 
 const LOG_LINES: usize = 300;
 const MAX_CONTROLS: usize = 8;
+const MAX_NOTICES: usize = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
     Start,
     Pause,
     Stop,
+    /// Quit Zippy, from the tray icon's menu.
+    Quit,
     Refresh(Reads),
     /// Start huntbot now instead of waiting for its countdown or a retry.
     Huntbot,
@@ -20,6 +24,8 @@ pub enum Control {
     HuntbotPassword(String),
     /// Send this command ahead of the routine ones, from the dashboard's right-click menu.
     Send(Command),
+    /// Give a cookie, from the dashboard's Reminders panel.
+    GiveCookie(Recipient),
     /// Developer mode only: behave exactly as if OwO had posted a captcha.
     SimulateCaptcha,
     /// Developer mode only: log the newest chat messages as Zippy reads them.
@@ -45,10 +51,11 @@ pub enum Command {
     Vote,
     Pray,
     Battle,
+    Mail,
 }
 
 impl Command {
-    const ALL: [Command; 12] = [
+    const ALL: [Command; 13] = [
         Command::Huntbot,
         Command::Daily(Daily::Claim),
         Command::Daily(Daily::Run),
@@ -61,6 +68,7 @@ impl Command {
         Command::Vote,
         Command::Pray,
         Command::Battle,
+        Command::Mail,
     ];
 
     pub fn text(self) -> &'static str {
@@ -73,6 +81,7 @@ impl Command {
             Command::Vote => "owovote",
             Command::Pray => "owopray",
             Command::Battle => "owob",
+            Command::Mail => "owomail",
         }
     }
 
@@ -110,11 +119,17 @@ pub struct Hub {
     pub stats: Stats,
     pub dailies: Vec<DailyView>,
     pub huntbot: huntbot::View,
+    pub cookie: cookie::View,
+    /// The console window waits in the taskbar tray (dashboard mode).
+    pub tray: bool,
     /// Developer mode (`--debug`): captcha simulation and raw chat dumps.
     pub debug: bool,
     log: VecDeque<(u64, String)>,
     log_seq: u64,
     controls: VecDeque<Control>,
+    /// Short notices the dashboard shows as toasts, numbered so each shows once.
+    notices: VecDeque<(u64, String, bool)>,
+    notice_seq: u64,
 }
 
 static HUB: LazyLock<Mutex<Hub>> = LazyLock::new(|| {
@@ -125,9 +140,13 @@ static HUB: LazyLock<Mutex<Hub>> = LazyLock::new(|| {
         dailies: Vec::new(),
         debug: false,
         huntbot: huntbot::View::off(),
+        cookie: cookie::View::idle(),
+        tray: false,
         log: VecDeque::new(),
         log_seq: 0,
         controls: VecDeque::new(),
+        notices: VecDeque::new(),
+        notice_seq: 0,
     })
 });
 
@@ -150,6 +169,18 @@ pub fn say(line: String) {
         hub.log.pop_front();
     }
     hub.log.push_back(entry);
+}
+
+/// A short notice for the dashboard, also written to the log. Only the newest few are kept.
+pub fn notice(text: String, error: bool) {
+    say(format!("{} {text}", if error { "[!]" } else { "[OK]" }));
+    let mut hub = hub();
+    hub.notice_seq += 1;
+    let seq = hub.notice_seq;
+    if hub.notices.len() == MAX_NOTICES {
+        hub.notices.pop_front();
+    }
+    hub.notices.push_back((seq, text, error));
 }
 
 /// The dashboard stamps every line itself, so the "[12:34:56] " some console lines start with goes.
@@ -176,6 +207,10 @@ impl Hub {
 
     pub fn log_seq(&self) -> u64 {
         self.log_seq
+    }
+
+    pub fn notices(&self) -> impl Iterator<Item = &(u64, String, bool)> {
+        self.notices.iter()
     }
 
     pub fn take_control(&mut self) -> Option<Control> {

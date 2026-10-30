@@ -54,11 +54,8 @@
       <button type="button" id="pause" disabled>Pause</button>
       <button type="button" id="stop" disabled>Stop</button>
     </div>
-    <div class="keys">
-      <p>Pro tip: use F8 to pause or resume, and use F10 to quit 😏</p>
-      <p id="menu-hint">Right-click a row in Huntbot, Reminders, Statistics or Daily commands to send its command next. With the keyboard, focus the row and press Shift+F10.</p>
-      <p class="queue-note" id="queue-note" role="status"></p>
-    </div>
+    <p class="keys" id="pro-tip" tabindex="0"><span class="tip-label">Pro tip:</span> <span class="tip-stack" id="tip-stack"></span></p>
+    <p id="menu-hint" hidden>Right-click this row, or press Shift+F10, to send its command next.</p>
   </section>
 
   <section class="panel huntbot" id="huntbot" aria-labelledby="huntbot-title">
@@ -93,6 +90,16 @@
       </button>
     </div>
     <ul id="reminders" class="rows"></ul>
+    <form class="give-cookie" id="cookie-form" novalidate>
+      <label for="cookie-to">Give a cookie to
+        <small id="cookie-hint">Their Discord username. Zippy sends owocookie @username for you.</small>
+      </label>
+      <div class="password-row">
+        <input id="cookie-to" name="to" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+          maxlength="40" placeholder="username">
+        <button type="submit" id="cookie-send" disabled>Give cookie</button>
+      </div>
+    </form>
   </section>
 
   <section class="panel statistics" aria-labelledby="statistics-title">
@@ -115,8 +122,12 @@
   </section>
 
   <section class="panel log" aria-labelledby="log-title">
-    <h2 id="log-title">Activity</h2>
-    <ol id="log" tabindex="0" aria-label="Activity log, newest at the bottom"></ol>
+    <div class="panel-head">
+      <h2 id="log-title">Activity</h2>
+      <button type="button" class="quiet" id="log-toggle" aria-expanded="false" aria-controls="log">Expand</button>
+    </div>
+    <p class="log-summary" id="log-summary" role="status"></p>
+    <ol id="log" tabindex="0" aria-label="Activity log, newest at the bottom" hidden></ol>
   </section>
 </main>
 
@@ -145,5 +156,7 @@
 <div class="command-menu" id="command-menu" role="menu" aria-label="Command" hidden>
   <button type="button" role="menuitem" id="command-send"></button>
 </div>
+
+<ol class="toasts" id="toasts" aria-label="Notifications" aria-live="polite"></ol>
 </body>
 </html>

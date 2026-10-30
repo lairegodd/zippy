@@ -1,11 +1,13 @@
 #[macro_use]
 mod hub;
+mod cookie;
 mod daily;
 mod gems;
 mod huntbot;
 mod menu;
 mod settings;
 mod stats;
+mod tray;
 mod update;
 mod web;
 
@@ -42,13 +44,13 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
     TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId, UIA_ClassNamePropertyId,
-    UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_NamePropertyId,
+    UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_ListItemControlTypeId, UIA_NamePropertyId,
     UIA_ValueValuePropertyId, UIA_E_ELEMENTNOTAVAILABLE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_F10, VK_F8, VK_F9, VK_LWIN, VK_MENU, VK_RETURN,
-    VK_RWIN, VK_SHIFT,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_A, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F10, VK_F8,
+    VK_F9, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, FlashWindowEx, GetForegroundWindow, GetWindowTextLengthW,
@@ -444,13 +446,13 @@ fn type_text(hwnd: HWND, text: &str) -> bool {
     true
 }
 
-fn press_enter(hwnd: HWND) -> bool {
+fn press_key(hwnd: HWND, vk: VIRTUAL_KEY) -> bool {
     let focused = unsafe { GetForegroundWindow() } == hwnd;
-    focused
-        && send_inputs(&[
-            key_input(VK_RETURN, 0, KEYBD_EVENT_FLAGS(0)),
-            key_input(VK_RETURN, 0, KEYEVENTF_KEYUP),
-        ])
+    focused && send_inputs(&[key_input(vk, 0, KEYBD_EVENT_FLAGS(0)), key_input(vk, 0, KEYEVENTF_KEYUP)])
+}
+
+fn press_enter(hwnd: HWND) -> bool {
+    press_key(hwnd, VK_RETURN)
 }
 
 /// A held Shift turns Enter into a newline, and Ctrl or Alt turn letters into shortcuts.
@@ -463,6 +465,69 @@ fn modifier_held() -> bool {
 /// Discord fills an empty message box with a zero-width no-break space.
 fn composer_text(value: &str) -> &str {
     value.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{feff}' | '\u{200b}'))
+}
+
+/// Empties the message box: Escape closes any list Discord has open, then select all and delete. Only true
+/// when the box is seen empty afterwards; Enter is never pressed.
+fn clear_composer(hwnd: HWND, message_box: &IUIAutomationElement) -> bool {
+    if !focus_window(hwnd) || unsafe { message_box.SetFocus() }.is_err() {
+        return false;
+    }
+    sleep(Duration::from_millis(80));
+    if unsafe { GetForegroundWindow() } != hwnd || !press_key(hwnd, VK_ESCAPE) {
+        return false;
+    }
+    sleep(Duration::from_millis(80));
+    // Escape can take the focus off the box in Discord, so it goes back before anything is deleted.
+    if unsafe { message_box.SetFocus() }.is_err() {
+        return false;
+    }
+    sleep(Duration::from_millis(60));
+    let select_all = send_inputs(&[
+        key_input(VK_CONTROL, 0, KEYBD_EVENT_FLAGS(0)),
+        key_input(VK_A, 0, KEYBD_EVENT_FLAGS(0)),
+        key_input(VK_A, 0, KEYEVENTF_KEYUP),
+        key_input(VK_CONTROL, 0, KEYEVENTF_KEYUP),
+    ]);
+    sleep(Duration::from_millis(60));
+    if !select_all || !press_key(hwnd, VK_BACK) {
+        return false;
+    }
+    (0..6).any(|attempt| {
+        sleep(Duration::from_millis(if attempt == 0 { 120 } else { 60 }));
+        element_value(message_box, false).is_some_and(|v| composer_text(&v).is_empty())
+    })
+}
+
+/// Which row of Discord's mention list belongs to `username`. Discord writes the username after the display
+/// name, so the row whose last word is the username wins; any word is tried after that. Usernames are unique
+/// but display names are not, so if two rows fit equally Zippy cannot tell and picks none.
+fn mention_index(rows: &[String], username: &str) -> Option<usize> {
+    let words = |row: &String| -> Vec<String> {
+        row.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+            .map(|word| word.trim_matches('.').to_ascii_lowercase())
+            .filter(|word| !word.is_empty())
+            .collect()
+    };
+    let unique = |fits: &dyn Fn(&[String]) -> bool| {
+        let mut matches = rows.iter().enumerate().filter(|(_, row)| fits(&words(row))).map(|(i, _)| i);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    };
+    let username = username.to_ascii_lowercase();
+    unique(&|w: &[String]| w.last() == Some(&username)).or_else(|| unique(&|w: &[String]| w.contains(&username)))
+}
+
+/// The message box after picking someone: the command, then the mention, which Discord's editor reads out as
+/// "@Display Name", a blank line, and the username. Nothing else may be in it.
+fn mention_typed(text: &str, username: &str) -> bool {
+    let Some(mention) = text.strip_prefix(MENTION_PREFIX) else { return false };
+    let lines: Vec<&str> = mention
+        .lines()
+        .map(|line| line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}'))
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines.len() == 2 && lines[1].eq_ignore_ascii_case(username)
 }
 
 fn alert(hwnd: HWND, title: &str, body: &str) {
@@ -643,6 +708,34 @@ impl Uia {
             Ok(scan)
         }
     }
+
+    /// The rows of Discord's mention list ("Members matching @…"), top to bottom. Each row's automation id is
+    /// `autocomplete-N` and its name is the display name followed by the username, as Discord shows it.
+    fn mention_rows(&self, hwnd: HWND) -> Vec<String> {
+        let rows = || -> Result<Vec<String>> {
+            unsafe {
+                let root = self.automation.ElementFromHandle(hwnd)?;
+                let items = self
+                    .automation
+                    .CreatePropertyCondition(UIA_ControlTypePropertyId, &VARIANT::from(UIA_ListItemControlTypeId.0))?;
+                let found = root.FindAllBuildCache(TreeScope_Descendants, &items, &self.cache)?;
+                let mut rows: Vec<(usize, String)> = Vec::new();
+                for i in 0..found.Length()? {
+                    let Ok(el) = found.GetElement(i) else { continue };
+                    let id = el.CachedAutomationId().map(|b| b.to_string()).unwrap_or_default();
+                    let Some(n) = id.strip_prefix("autocomplete-").and_then(|n| n.parse().ok()) else { continue };
+                    rows.push((n, el.CachedName().map(|b| b.to_string()).unwrap_or_default()));
+                }
+                rows.sort_by_key(|(n, _)| *n);
+                // A gap in the numbers means rows Zippy cannot see; picking by position would then be unsafe.
+                if rows.iter().enumerate().any(|(i, (n, _))| i != *n) {
+                    return Ok(Vec::new());
+                }
+                Ok(rows.into_iter().map(|(_, name)| name).collect())
+            }
+        };
+        rows().unwrap_or_default()
+    }
 }
 
 fn element_value(el: &IUIAutomationElement, cached: bool) -> Option<String> {
@@ -760,6 +853,11 @@ fn report_target(t: &Target, reason: &str) {
     hub::hub().target = Some(hub::Target { app: t.exe.clone(), title: t.title.clone() });
 }
 
+/// A cookie for someone named by username; the rest of the command is the username.
+const MENTION_PREFIX: &str = "owocookie @";
+/// How long Discord gets to show the people matching what was typed.
+const MENTION_WAIT: Duration = Duration::from_millis(1500);
+
 enum Sent {
     Yes,
     No,
@@ -767,6 +865,8 @@ enum Sent {
     Interrupted,
     /// The box did not hold exactly the command, so Enter was not pressed.
     Unconfirmed,
+    /// Discord's mention list had nobody with that username; the message box was cleared, nothing sent.
+    NoMention,
 }
 
 enum State {
@@ -807,6 +907,7 @@ enum Job {
     Daily(daily::Daily),
     Query(&'static str),
     Huntbot,
+    Cookie,
 }
 
 /// Order within a tier.
@@ -883,6 +984,8 @@ struct Zippy {
     next_auto_stats: Option<Instant>,
     /// With `huntbot = on`: starts huntbot again each time it comes back.
     huntbot: Option<Huntbot>,
+    /// A cookie the player asked to give from the dashboard.
+    cookies: cookie::Cookies,
     /// Developer mode: the next check acts as if OwO had posted a captcha.
     simulated_captcha: bool,
 }
@@ -1064,6 +1167,7 @@ impl Zippy {
         let events = self.watcher.observe(&scan.messages, self.gems.player(), now);
         self.record(events);
         self.follow_huntbot(&scan.messages, now);
+        self.follow_cookie(&scan.messages, now);
         hub::hub().dailies = self.dailies.view();
         Some(scan)
     }
@@ -1106,6 +1210,59 @@ impl Zippy {
             None => {}
         }
         hub::hub().huntbot = huntbot.view(now, unix_ms_now());
+    }
+
+    fn give_cookie(&mut self, recipient: cookie::Recipient) {
+        let label = recipient.label();
+        match self.cookies.give(recipient) {
+            Ok(()) => out!("[QUEUE] A cookie for {label} goes next."),
+            Err(why) => hub::notice(format!("Not giving a cookie to {label}: {why}."), true),
+        }
+        hub::hub().cookie = self.cookies.view();
+    }
+
+    /// Reads OwO's answer to a cookie and tells the dashboard how it went.
+    fn follow_cookie(&mut self, messages: &[ChatMessage], now: Instant) {
+        if let Some(outcome) = self.cookies.observe(messages, self.gems.player(), now) {
+            self.report_cookie(outcome);
+        }
+    }
+
+    fn report_cookie(&mut self, outcome: cookie::Outcome) {
+        match outcome {
+            cookie::Outcome::Given(recipient) => {
+                hub::notice(format!("Gave a cookie to {}.", recipient.label()), false);
+                // The cookie count and the time of the next cookie come from a fresh read.
+                self.queue_read("owo cookie", 1);
+            }
+            cookie::Outcome::Wait { ready_at } => {
+                let when = ready_at.map_or(String::new(), |at| format!(" OwO says the next one can go in {}.", minutes(at)));
+                hub::notice(format!("No cookie given: you already gave one.{when}"), true);
+                if let Some(at) = ready_at {
+                    self.record(vec![(stats::Event::Set(Stat::CookieReadyAt, at), unix_ms_now())]);
+                }
+            }
+            cookie::Outcome::ToSelf => hub::notice("OwO doesn't let you give a cookie to yourself.".to_owned(), true),
+            cookie::Outcome::NeedId(name) => hub::notice(
+                format!("Couldn't find @{name}, so no cookie was sent. Paste their User ID in the Reminders panel instead."),
+                true,
+            ),
+            cookie::Outcome::Unknown(id) => {
+                hub::notice(format!("OwO couldn't find a user with ID {id}. Check the ID and try again."), true)
+            }
+            cookie::Outcome::NoReply(recipient) => hub::notice(
+                format!("OwO didn't answer the cookie for {}. Check Discord before trying again.", recipient.label()),
+                true,
+            ),
+        }
+        hub::hub().cookie = self.cookies.view();
+    }
+
+    /// While Zippy is paused nothing is read, so a cookie waiting for OwO's answer ends on its own timeout.
+    fn expire_cookie(&mut self) {
+        if let Some(outcome) = self.cookies.observe(&[], None, Instant::now()) {
+            self.report_cookie(outcome);
+        }
     }
 
     /// Queues a read, or moves it up if it is already queued at a lower priority.
@@ -1165,7 +1322,12 @@ impl Zippy {
                 }
                 None => out!("[QUEUE] Not sending {text}: it is off in Settings."),
             },
-            hub::Command::Huntbot | hub::Command::Cash | hub::Command::Cookie | hub::Command::BossTickets | hub::Command::Vote => {
+            hub::Command::Huntbot
+            | hub::Command::Cash
+            | hub::Command::Cookie
+            | hub::Command::BossTickets
+            | hub::Command::Vote
+            | hub::Command::Mail => {
                 self.queue_read(text, 0);
                 out!("[QUEUE] {text} goes next.");
             }
@@ -1178,6 +1340,21 @@ impl Zippy {
         }
         self.refresh(Reads::Reminders, false);
         self.refresh(Reads::Statistics, false);
+    }
+
+    /// Waits for Discord to list the people matching what was typed; returns the row for `username`.
+    fn find_mention(&self, username: &str) -> Option<(usize, String)> {
+        let until = Instant::now() + MENTION_WAIT;
+        let mut rows = Vec::new();
+        while Instant::now() < until {
+            sleep(Duration::from_millis(150));
+            rows = self.uia.mention_rows(self.target.hwnd);
+            if let Some(index) = mention_index(&rows, username) {
+                return Some((index, rows.swap_remove(index)));
+            }
+        }
+        out!("[COOKIE] Discord listed {} for @{username}: {rows:?}", if rows.is_empty() { "nobody" } else { "these people" });
+        None
     }
 
     fn send(&mut self, command: &str, message_box: &IUIAutomationElement) -> Sent {
@@ -1204,14 +1381,52 @@ impl Zippy {
             return Sent::Interrupted;
         }
         // Keys pressed by the user while typing, or a blocked SendInput, show up as a mismatch here.
+        let matches = || element_value(message_box, false).is_some_and(|v| composer_text(&v) == command);
         let typed = (0..6).any(|attempt| {
             if attempt > 0 {
                 sleep(Duration::from_millis(50));
             }
-            element_value(message_box, false).is_some_and(|v| composer_text(&v) == command)
+            matches()
         });
         if !typed {
             return Sent::Unconfirmed;
+        }
+        if let Some(username) = command.strip_prefix(MENTION_PREFIX) {
+            // Discord lists the people matching "@username" above the message box ("Members matching …"). The
+            // row for this person is picked with the arrow keys and Tab, which turns the text into a real
+            // mention; with nobody to pick, the text is cleared and nothing is sent.
+            let Some((index, row)) = self.find_mention(username) else {
+                return if clear_composer(hwnd, message_box) { Sent::NoMention } else { Sent::Unconfirmed };
+            };
+            for _ in 0..index {
+                if !press_key(hwnd, VK_DOWN) {
+                    return Sent::Interrupted;
+                }
+                sleep(Duration::from_millis(40));
+            }
+            if !press_key(hwnd, VK_TAB) {
+                return Sent::Interrupted;
+            }
+            // The mention shows in the box as the display name with the username under it, and the list
+            // closes; both are checked before Enter, so Enter can only send the message.
+            let chosen = row.split_whitespace().last().unwrap_or(username).to_lowercase();
+            let picked = (0..6).any(|attempt| {
+                sleep(Duration::from_millis(if attempt == 0 { 200 } else { 80 }));
+                element_value(message_box, false).is_some_and(|v| mention_typed(composer_text(&v), &chosen))
+                    && self.uia.mention_rows(hwnd).is_empty()
+            });
+            if !picked || unsafe { GetForegroundWindow() } != hwnd {
+                return if clear_composer(hwnd, message_box) { Sent::NoMention } else { Sent::Unconfirmed };
+            }
+        } else if command.contains('@') {
+            // `<@ID>` may still open the list, where Enter would pick a person; Escape closes it, text unchanged.
+            if !press_key(hwnd, VK_ESCAPE) {
+                return Sent::Interrupted;
+            }
+            sleep(Duration::from_millis(150));
+            if !matches() {
+                return Sent::Unconfirmed;
+            }
         }
         if modifier_held() || !press_enter(hwnd) {
             return Sent::Interrupted;
@@ -1257,6 +1472,12 @@ impl Zippy {
                 );
                 return None;
             }
+            Sent::NoMention => {
+                if let Some(outcome) = self.cookies.not_found() {
+                    self.report_cookie(outcome);
+                }
+                return None;
+            }
         }
         self.gems.sent(command, before + 1);
         self.watcher.sent(command, before, Instant::now());
@@ -1275,6 +1496,9 @@ impl Zippy {
         }
         let holding = self.gem_hold.is_some_and(|until| now < until) && self.gems.awaiting_inventory();
         let mut candidates = Vec::new();
+        if self.cookies.due().is_some() {
+            candidates.push(Candidate { tier: 0, rank: Rank::Asked, due: now, job: Job::Cookie });
+        }
         if self.huntbot.as_ref().is_some_and(|h| h.due().is_some()) {
             candidates.push(Candidate { tier: 0, rank: Rank::Urgent, due: now, job: Job::Huntbot });
         }
@@ -1364,6 +1588,17 @@ impl Zippy {
                 },
                 None => false,
             },
+            Job::Cookie => match self.cookies.due() {
+                Some(command) => match self.scan_and_send(&command) {
+                    Some(before) => {
+                        self.cookies.sent(before, Instant::now());
+                        hub::hub().cookie = self.cookies.view();
+                        true
+                    }
+                    None => false,
+                },
+                None => false,
+            },
         };
         self.next_send = Instant::now() + if sent { GAP_BETWEEN_COMMANDS } else { SCAN_EVERY };
     }
@@ -1394,6 +1629,16 @@ impl Zippy {
             self.next_scan = now + SCAN_EVERY;
             self.check();
         }
+    }
+}
+
+/// How long until `at_ms`, as "2 h 3 min" or "45 min".
+fn minutes(at_ms: u64) -> String {
+    let minutes = at_ms.saturating_sub(unix_ms_now()).div_ceil(60_000).max(1);
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
     }
 }
 
@@ -1600,6 +1845,7 @@ fn start_session(uia: &Uia, target: Target, initial: PageScan, settings: &Settin
         last_read: now,
         next_auto_stats: settings.stats.then(|| now + auto_stats_wait()),
         huntbot: settings.huntbot.then(|| Huntbot::new(now)),
+        cookies: cookie::Cookies::new(),
         simulated_captcha: false,
     };
     out!("     Locked to channel: {}\n", m.channel);
@@ -1700,11 +1946,11 @@ fn run(ui: Ui, settings_path: &Path) -> Result<()> {
     }
     let mut next_reminder = Instant::now();
     loop {
-        if f10.pressed() {
+        let mut control = hub::hub().take_control();
+        if f10.pressed() || control == Some(Control::Quit) {
             out!("Quitting.");
             return Ok(());
         }
-        let mut control = hub::hub().take_control();
         if f8.pressed() {
             let running = matches!(&session, Session::Active(z) if matches!(z.state, State::Running));
             control = Some(if running { Control::Pause } else { Control::Start });
@@ -1731,6 +1977,7 @@ fn run(ui: Ui, settings_path: &Path) -> Result<()> {
                 hub::set_phase(Phase::Idle);
                 hub::hub().target = None;
                 hub::hub().huntbot = idle_huntbot(&settings);
+                hub::hub().cookie = cookie::View::idle();
                 out!("[{}] Stopped.", clock());
             }
             (Some(Control::Refresh(reads)), Session::Active(z)) => z.refresh(reads, true),
@@ -1748,6 +1995,8 @@ fn run(ui: Ui, settings_path: &Path) -> Result<()> {
                 }
             }
             (Some(Control::Send(command)), Session::Active(z)) => z.request(command),
+            (Some(Control::GiveCookie(recipient)), Session::Active(z)) => z.give_cookie(recipient),
+            (Some(Control::GiveCookie(_)), _) => out!("[!] Press Start first: the cookie is given in Discord."),
             (Some(Control::Huntbot | Control::HuntbotPassword(_)), _) => {
                 out!("[!] Press Start first: huntbot commands are typed in Discord.")
             }
@@ -1790,6 +2039,7 @@ fn run(ui: Ui, settings_path: &Path) -> Result<()> {
                 }
             },
             Session::Active(z) if matches!(z.state, State::Running) => z.tick(),
+            Session::Active(z) => z.expire_cookie(),
             _ => {}
         }
         if now >= next_reminder {
@@ -1861,8 +2111,9 @@ fn main() -> Result<()> {
             Ok(url) => {
                 // Printed only, so the secret link never reaches the dashboard's own log.
                 println!("[OK] Dashboard: {url}");
-                out!("[OK] Dashboard opened in your browser. Keep this window open; closing it stops Zippy.");
+                out!("[OK] Dashboard opened in your browser. Closing Zippy's window stops Zippy and the dashboard.");
                 web::open_in_browser(&url);
+                tray::start();
             }
             Err(e) => {
                 out!("[!] Could not start the dashboard: {e}. Running here instead.");
@@ -1870,7 +2121,9 @@ fn main() -> Result<()> {
             }
         }
     }
-    run(ui, &settings_path)
+    let result = run(ui, &settings_path);
+    tray::remove();
+    result
 }
 
 #[cfg(test)]
@@ -1939,6 +2192,30 @@ mod tests {
         assert!(is_discord_url("discord.com"));
         assert!(!is_discord_url("check discord.com/invite/abc"));
         assert!(!is_discord_url("discord.community/forum"));
+    }
+
+    #[test]
+    fn the_picked_mention_is_read_as_discord_shows_it() {
+        // Exactly what the probe read from Discord after picking the row "unXpected unxpected3891" with Tab.
+        let picked = composer_text("owocookie @unXpected\n\nunxpected3891\n\u{feff} ");
+        assert!(mention_typed(picked, "unxpected3891"));
+        assert!(!mention_typed(picked, "someone_else"));
+        assert!(!mention_typed("owocookie @unxpected", "unxpected"), "plain text is not a mention");
+        assert!(!mention_typed("owocookie @unXpected\n\nunxpected3891\n hello", "unxpected3891"));
+        let real_row = vec!["unXpected unxpected3891".to_owned()];
+        assert_eq!(mention_index(&real_row, "unxpected"), Some(0), "the display name, as typed, finds them too");
+        assert_eq!(mention_index(&real_row, "unxpected3891"), Some(0));
+    }
+
+    #[test]
+    fn the_mention_row_is_picked_by_exact_username_only() {
+        let rows = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let list = rows(&["unXpected unxpected_alt", "unXpected unxpected", "Someone else unxpected.fan"]);
+        assert_eq!(mention_index(&list, "unxpected"), Some(1));
+        assert_eq!(mention_index(&list, "unxpected_alt"), Some(0));
+        assert_eq!(mention_index(&list, "unx"), None, "a prefix is not the username");
+        assert_eq!(mention_index(&rows(&["A shared", "B shared"]), "shared"), None, "two rows: Zippy can't tell");
+        assert_eq!(mention_index(&[], "anyone"), None);
     }
 
     #[test]
